@@ -85,6 +85,16 @@ app.get("/messages", async (req, res) => {
   }
 });
 
+// Endpoint to view user.json
+app.get("/users", async (req, res) => {
+  try {
+    const users = await loadUsers();
+    res.json(users);
+  } catch (err) {
+    res.status(500).send("Error reading users");
+  }
+});
+
 // Endpoint to set username
 app.post("/set-username", express.json(), async (req, res) => {
   try {
