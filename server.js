@@ -46,6 +46,16 @@ async function saveMessages(messages) {
 
 initMessagesFile();
 
+// Endpoint to view messages.json
+app.get("/messages", async (req, res) => {
+  try {
+    const messages = await loadMessages();
+    res.json(messages);
+  } catch (err) {
+    res.status(500).send("Error reading messages");
+  }
+});
+
 wss.on("connection", async (ws) => {
   console.log("New client connected");
 
