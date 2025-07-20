@@ -75,6 +75,17 @@ async function saveUsers(users) {
 
 initFiles();
 
+// Enable CORS for GitHub Pages origin (adjust if your domain differs)
+app.use((req, res, next) => {
+  res.header("Access-Control-Allow-Origin", "https://solmemetics.com"); // Replace with your GitHub Pages domain
+  res.header("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  res.header("Access-Control-Allow-Headers", "Content-Type");
+  if (req.method === "OPTIONS") {
+    return res.sendStatus(200);
+  }
+  next();
+});
+
 // Endpoint to view messages.json
 app.get("/messages", async (req, res) => {
   try {
@@ -102,11 +113,13 @@ app.post("/set-username", express.json(), async (req, res) => {
     if (!wallet || !username) {
       return res.status(400).send("Wallet and username required");
     }
+    console.log(`Setting username for wallet ${wallet} to ${username}`);
     const users = await loadUsers();
     users[wallet] = username;
     await saveUsers(users);
     res.send("Username set");
   } catch (err) {
+    console.error("Error setting username:", err);
     res.status(500).send("Error setting username");
   }
 });
