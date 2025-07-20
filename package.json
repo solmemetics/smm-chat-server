@@ -7,7 +7,9 @@
   },
   "dependencies": {
     "express": "^4.18.2",
-    "ws": "^8.18.3"
+    "ws": "^8.18.3",
+    "@solana/web3.js": "^1.95.3",
+    "tweetnacl": "^1.0.3"
   },
   "keywords": [],
   "author": "",
