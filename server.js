@@ -9,15 +9,23 @@ const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
 const MESSAGES_FILE = path.join(__dirname, "messages.json");
+const USERS_FILE = path.join(__dirname, "user.json");
 
-// Initialize messages file
-async function initMessagesFile() {
+// Initialize files
+async function initFiles() {
   try {
     await fs.access(MESSAGES_FILE);
     console.log("Messages file exists");
   } catch {
     console.log("Creating new messages file");
     await fs.writeFile(MESSAGES_FILE, JSON.stringify([]));
+  }
+  try {
+    await fs.access(USERS_FILE);
+    console.log("Users file exists");
+  } catch {
+    console.log("Creating new users file");
+    await fs.writeFile(USERS_FILE, JSON.stringify({}));
   }
 }
 
@@ -44,7 +52,28 @@ async function saveMessages(messages) {
   }
 }
 
-initMessagesFile();
+// Load users
+async function loadUsers() {
+  try {
+    const data = await fs.readFile(USERS_FILE, "utf8");
+    return JSON.parse(data);
+  } catch (err) {
+    console.error("Error loading users:", err);
+    return {};
+  }
+}
+
+// Save users
+async function saveUsers(users) {
+  try {
+    await fs.writeFile(USERS_FILE, JSON.stringify(users, null, 2));
+    console.log("Saved users to user.json");
+  } catch (err) {
+    console.error("Error saving users:", err);
+  }
+}
+
+initFiles();
 
 // Endpoint to view messages.json
 app.get("/messages", async (req, res) => {
@@ -56,8 +85,25 @@ app.get("/messages", async (req, res) => {
   }
 });
 
-wss.on("connection", async (ws) => {
-  console.log("New client connected");
+// Endpoint to set username
+app.post("/set-username", express.json(), async (req, res) => {
+  try {
+    const { wallet, username } = req.body;
+    if (!wallet || !username) {
+      return res.status(400).send("Wallet and username required");
+    }
+    const users = await loadUsers();
+    users[wallet] = username;
+    await saveUsers(users);
+    res.send("Username set");
+  } catch (err) {
+    res.status(500).send("Error setting username");
+  }
+});
+
+wss.on("connection", async (ws, req) => {
+  const clientIp = req.socket.remoteAddress;
+  console.log(`New client connected from ${clientIp}`);
 
   // Send existing messages
   const messages = await loadMessages();
@@ -71,14 +117,17 @@ wss.on("connection", async (ws) => {
     try {
       const msg = JSON.parse(data);
       if (msg.type === "chat" && msg.user && msg.rank && msg.text) {
+        const users = await loadUsers();
+        const username = users[msg.user] || msg.user.slice(0, 6);
         const chatMessage = {
-          user: msg.user,
+          user: username,
           rank: msg.rank,
           text: msg.text,
           timestamp: new Date().toISOString(),
+          originalWallet: msg.user, // Store original wallet for admin
         };
-        console.log(`Received: ${msg.rank} ${msg.user}: ${msg.text}`);
-        const messages = await loadMessages(); // Reload to avoid race conditions
+        console.log(`Received: ${msg.rank} ${username}: ${msg.text}`);
+        const messages = await loadMessages();
         messages.push(chatMessage);
         await saveMessages(messages);
         wss.clients.forEach((client) => {
@@ -86,6 +135,18 @@ wss.on("connection", async (ws) => {
             client.send(JSON.stringify(chatMessage));
           }
         });
+      } else if (msg.type === "delete" && msg.index !== undefined) {
+        const messages = await loadMessages();
+        if (messages[msg.index]) {
+          console.log(`Delete request for message at index ${msg.index}`);
+          messages.splice(msg.index, 1);
+          await saveMessages(messages);
+          wss.clients.forEach((client) => {
+            if (client.readyState === WebSocket.OPEN) {
+              client.send(JSON.stringify({ type: "delete", index: msg.index }));
+            }
+          });
+        }
       }
     } catch (err) {
       console.error("Invalid message format:", err);
