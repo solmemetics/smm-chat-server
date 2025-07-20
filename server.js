@@ -14,7 +14,9 @@ const MESSAGES_FILE = path.join(__dirname, "messages.json");
 async function initMessagesFile() {
   try {
     await fs.access(MESSAGES_FILE);
+    console.log("Messages file exists");
   } catch {
+    console.log("Creating new messages file");
     await fs.writeFile(MESSAGES_FILE, JSON.stringify([]));
   }
 }
@@ -23,7 +25,9 @@ async function initMessagesFile() {
 async function loadMessages() {
   try {
     const data = await fs.readFile(MESSAGES_FILE, "utf8");
-    return JSON.parse(data);
+    const messages = JSON.parse(data);
+    console.log(`Loaded ${messages.length} messages from messages.json`);
+    return messages;
   } catch (err) {
     console.error("Error loading messages:", err);
     return [];
@@ -34,6 +38,7 @@ async function loadMessages() {
 async function saveMessages(messages) {
   try {
     await fs.writeFile(MESSAGES_FILE, JSON.stringify(messages, null, 2));
+    console.log(`Saved ${messages.length} messages to messages.json`);
   } catch (err) {
     console.error("Error saving messages:", err);
   }
@@ -46,7 +51,11 @@ wss.on("connection", async (ws) => {
 
   // Send existing messages
   const messages = await loadMessages();
-  messages.forEach((msg) => ws.send(JSON.stringify(msg)));
+  messages.forEach((msg) => {
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify(msg));
+    }
+  });
 
   ws.on("message", async (data) => {
     try {
@@ -59,6 +68,7 @@ wss.on("connection", async (ws) => {
           timestamp: new Date().toISOString(),
         };
         console.log(`Received: ${msg.rank} ${msg.user}: ${msg.text}`);
+        const messages = await loadMessages(); // Reload to avoid race conditions
         messages.push(chatMessage);
         await saveMessages(messages);
         wss.clients.forEach((client) => {
