@@ -1,9 +1,6 @@
 const WebSocket = require("ws");
 const express = require("express");
 const http = require("http");
-const nacl = require("tweetnacl");
-const bs58 = require("bs58");
-const { PublicKey, Connection, clusterApiUrl } = require("@solana/web3.js");
 const fs = require("fs").promises;
 const path = require("path");
 
@@ -11,11 +8,9 @@ const app = express();
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
-const TOKEN_MINT = new PublicKey("BbDK2SdFKstCuCjF152jWaRVmJMV7hHUW4xYvdMbjups");
-const VIP_MINIMUM = 100000;
 const MESSAGES_FILE = path.join(__dirname, "messages.json");
 
-// Initialize messages file if it doesn't exist
+// Initialize messages file
 async function initMessagesFile() {
   try {
     await fs.access(MESSAGES_FILE);
@@ -24,7 +19,7 @@ async function initMessagesFile() {
   }
 }
 
-// Load messages from file
+// Load messages
 async function loadMessages() {
   try {
     const data = await fs.readFile(MESSAGES_FILE, "utf8");
@@ -35,7 +30,7 @@ async function loadMessages() {
   }
 }
 
-// Save messages to file
+// Save messages
 async function saveMessages(messages) {
   try {
     await fs.writeFile(MESSAGES_FILE, JSON.stringify(messages, null, 2));
@@ -44,64 +39,19 @@ async function saveMessages(messages) {
   }
 }
 
-// Solana connection
-const connection = new Connection(clusterApiUrl("mainnet-beta"), "confirmed");
-
-async function verifyWalletAndBalance(publicKeyStr, signature, message) {
-  try {
-    // Verify signature
-    const publicKey = new PublicKey(publicKeyStr);
-    const signatureUint8 = bs58.decode(signature);
-    const messageUint8 = new TextEncoder().encode(message);
-    const isValid = nacl.sign.detached.verify(messageUint8, signatureUint8, publicKey.toBytes());
-    if (!isValid) return false;
-
-    // Verify SMM balance
-    const tokenAccounts = await connection.getParsedTokenAccountsByOwner(publicKey, {
-      mint: TOKEN_MINT,
-      programId: new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"),
-    });
-    let balance = 0;
-    for (const { account } of tokenAccounts.value) {
-      if (account.data.parsed.info.mint === TOKEN_MINT.toBase58()) {
-        balance = parseFloat(account.data.parsed.info.tokenAmount.uiAmount);
-        break;
-      }
-    }
-    return balance >= VIP_MINIMUM;
-  } catch (err) {
-    console.error("Verification error:", err);
-    return false;
-  }
-}
-
 initMessagesFile();
 
 wss.on("connection", async (ws) => {
   console.log("New client connected");
 
-  // Load and send existing messages
+  // Send existing messages
   const messages = await loadMessages();
   messages.forEach((msg) => ws.send(JSON.stringify(msg)));
 
   ws.on("message", async (data) => {
     try {
       const msg = JSON.parse(data);
-      if (msg.type === "auth") {
-        // Handle authentication
-        const isValid = await verifyWalletAndBalance(msg.publicKey, msg.signature, msg.sessionToken);
-        if (isValid) {
-          ws.isAuthenticated = true;
-          ws.publicKey = msg.publicKey;
-          ws.send(JSON.stringify({ type: "auth", status: "success" }));
-          console.log(`Authenticated: ${msg.publicKey}`);
-        } else {
-          ws.send(JSON.stringify({ type: "auth", status: "failed" }));
-          ws.close();
-        }
-      } else if (msg.type === "chat" && ws.isAuthenticated) {
-        // Handle chat message
-        if (!msg.user || !msg.rank || !msg.text) return;
+      if (msg.type === "chat" && msg.user && msg.rank && msg.text) {
         const chatMessage = {
           user: msg.user,
           rank: msg.rank,
@@ -112,7 +62,7 @@ wss.on("connection", async (ws) => {
         messages.push(chatMessage);
         await saveMessages(messages);
         wss.clients.forEach((client) => {
-          if (client.readyState === WebSocket.OPEN && client.isAuthenticated) {
+          if (client.readyState === WebSocket.OPEN) {
             client.send(JSON.stringify(chatMessage));
           }
         });
