@@ -77,7 +77,7 @@ initFiles();
 
 // Enable CORS for GitHub Pages origin
 app.use((req, res, next) => {
-  res.header("Access-Control-Allow-Origin", "https://solmemetics.com"); // Update to your GitHub Pages domain
+  res.header("Access-Control-Allow-Origin", "https://app.solmemetics.com"); // Updated to match your domain
   res.header("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   res.header("Access-Control-Allow-Headers", "Content-Type");
   if (req.method === "OPTIONS") {
