@@ -9,12 +9,20 @@
   "dependencies": {
     "@solana/spl-token": "^0.1.8",
     "@solana/web3.js": "^1.98.2",
+    "bs58": "^6.0.0",
     "dotenv": "^17.2.0",
     "express": "^4.19.2",
     "ws": "^8.18.3"
   },
   "devDependencies": {
     "nodemon": "^3.1.4"
+  },
+  "overrides": {
+    "@solana/spl-token": {
+      "@solana/buffer-layout-utils": {
+        "bigint-buffer": "1.1.5"
+      }
+    }
   },
   "keywords": [
     "solana",
