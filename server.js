@@ -23,11 +23,17 @@ const connection = new Connection("https://api.mainnet-beta.solana.com", "confir
 const ASSOCIATED_TOKEN_PROGRAM_ID = new PublicKey("ATokenGVdDGrw5uGzXBNzMuGZvx7bGTp4GVRZBe8KMP");
 async function getAssociatedTokenAddress(mint, owner) {
   if (!mint || !owner) {
-    console.error("getAssociatedTokenAddress: Invalid input", { mint: mint?.toBase58?.() || "undefined", owner: owner?.toBase58?.() || "undefined" });
+    console.error("getAssociatedTokenAddress: Invalid input", {
+      mint: mint?.toBase58?.() || "undefined",
+      owner: owner?.toBase58?.() || "undefined",
+    });
     throw new Error("Mint or owner is undefined");
   }
   if (!(mint instanceof PublicKey) || !(owner instanceof PublicKey)) {
-    console.error("getAssociatedTokenAddress: Invalid PublicKey", { mint: mint?.toBase58?.() || "not a PublicKey", owner: owner?.toBase58?.() || "not a PublicKey" });
+    console.error("getAssociatedTokenAddress: Invalid PublicKey", {
+      mint: mint?.toBase58?.() || "not a PublicKey",
+      owner: owner?.toBase58?.() || "not a PublicKey",
+    });
     throw new Error("Mint or owner is not a valid PublicKey");
   }
   try {
@@ -37,20 +43,28 @@ async function getAssociatedTokenAddress(mint, owner) {
       console.error("Invalid PublicKey format", { mint: mintStr, owner: ownerStr });
       throw new Error("Invalid PublicKey format");
     }
+    console.log("Validating PublicKey buffers:", { mint: Buffer.from(mint.toBytes()).length, owner: Buffer.from(owner.toBytes()).length });
+    if (!mint.toBytes() || !owner.toBytes()) {
+      console.error("PublicKey toBytes() failed", { mint: mintStr, owner: ownerStr });
+      throw new Error("Invalid PublicKey: toBytes() returned null or undefined");
+    }
     console.log("Computing ATA for mint:", mintStr, "owner:", ownerStr);
-    return (
-      await PublicKey.findProgramAddress(
-        [
-          owner.toBuffer(),
-          TOKEN_PROGRAM_ID.toBuffer(),
-          mint.toBuffer(),
-        ],
-        ASSOCIATED_TOKEN_PROGRAM_ID
-      )
-    )[0];
+    const [ata] = await PublicKey.findProgramAddress(
+      [
+        owner.toBuffer() || Buffer.alloc(32), // Fallback to avoid undefined
+        TOKEN_PROGRAM_ID.toBuffer(),
+        mint.toBuffer() || Buffer.alloc(32), // Fallback to avoid undefined
+      ],
+      ASSOCIATED_TOKEN_PROGRAM_ID
+    );
+    console.log("Computed ATA:", ata.toBase58());
+    return ata;
   } catch (err) {
-    console.error("Error in findProgramAddress:", err.message);
-    throw err;
+    console.error("Error in findProgramAddress:", err.message, {
+      mint: mint?.toBase58?.() || "undefined",
+      owner: owner?.toBase58?.() || "undefined",
+    });
+    throw new Error(`Failed to compute ATA: ${err.message}`);
   }
 }
 
@@ -271,9 +285,13 @@ app.post("/submit-suggestion", async (req, res) => {
         throw new Error("Invalid wallet address format");
       }
       userPublicKey = new PublicKey(wallet);
+      const userBytes = userPublicKey.toBytes();
+      if (!userBytes || userBytes.length !== 32) {
+        throw new Error("Invalid wallet PublicKey: toBytes() failed");
+      }
       console.log("Validated userPublicKey:", userPublicKey.toBase58());
     } catch (err) {
-      console.error("Invalid wallet address:", err.message);
+      console.error("Invalid wallet address:", err.message, { wallet });
       return res.status(400).json({ error: "Invalid wallet address" });
     }
 
@@ -284,9 +302,13 @@ app.post("/submit-suggestion", async (req, res) => {
         throw new Error("Invalid token mint address format");
       }
       tokenMint = new PublicKey(token);
+      const mintBytes = tokenMint.toBytes();
+      if (!mintBytes || mintBytes.length !== 32) {
+        throw new Error("Invalid token mint PublicKey: toBytes() failed");
+      }
       console.log("Validated tokenMint:", tokenMint.toBase58());
     } catch (err) {
-      console.error("Invalid token mint:", err.message);
+      console.error("Invalid token mint:", err.message, { token });
       return res.status(400).json({ error: "Invalid token mint address" });
     }
 
@@ -295,7 +317,16 @@ app.post("/submit-suggestion", async (req, res) => {
       console.error("Donation wallet not initialized");
       return res.status(500).json({ error: "Server configuration error: Donation wallet not initialized" });
     }
-    console.log("Donation wallet public key:", donationWallet.publicKey.toBase58());
+    try {
+      const donationBytes = donationWallet.publicKey.toBytes();
+      if (!donationBytes || donationBytes.length !== 32) {
+        throw new Error("Invalid donation wallet PublicKey: toBytes() failed");
+      }
+      console.log("Donation wallet public key:", donationWallet.publicKey.toBase58());
+    } catch (err) {
+      console.error("Donation wallet validation failed:", err.message);
+      return res.status(500).json({ error: "Server configuration error: Invalid donation wallet" });
+    }
 
     const users = await loadUsers();
     const username = users[wallet] || wallet.slice(0, 6);
@@ -312,7 +343,9 @@ app.post("/submit-suggestion", async (req, res) => {
     } else { // Token
       let userATA, donationATA;
       try {
+        console.log("Fetching user ATA for:", { mint: tokenMint.toBase58(), owner: userPublicKey.toBase58() });
         userATA = await getAssociatedTokenAddress(tokenMint, userPublicKey);
+        console.log("Fetching donation ATA for:", { mint: tokenMint.toBase58(), owner: donationWallet.publicKey.toBase58() });
         donationATA = await getAssociatedTokenAddress(tokenMint, donationWallet.publicKey);
         console.log("User ATA:", userATA.toBase58(), "Donation ATA:", donationATA.toBase58());
       } catch (err) {
@@ -483,7 +516,6 @@ app.get("/", (req, res) => {
   res.send("WebSocket server running");
 });
 
-const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+server.listen(port, () => {
+  console.log(`Server running on port ${port}`);
 });
