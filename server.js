@@ -4,8 +4,9 @@ const http = require("http");
 const fs = require("fs").promises;
 const path = require("path");
 const WebSocket = require("ws");
-const { Keypair, Connection, Transaction, SystemProgram, LAMPORTS_PER_SOL, PublicKey } = require("@solana/web3.js");
-const { createAssociatedTokenAccountInstruction, createTransferInstruction, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID } = require("@solana/spl-token");
+const { Keypair, Connection, Transaction, SystemProgram, LAMPORTS_PER_SOL, PublicKey, TransactionInstruction } = require("@solana/web3.js");
+const { createAssociatedTokenAccountInstruction, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID } = require("@solana/spl-token");
+const { createTransferInstruction } = require("@solana/spl-token"); // Ensure this is explicitly imported
 
 const app = express();
 const server = http.createServer(app);
@@ -16,9 +17,10 @@ const MESSAGES_FILE = path.join(__dirname, "messages.json");
 const USERS_FILE = path.join(__dirname, "user.json");
 const SUGGESTIONS_FILE = path.join(__dirname, "suggestions.json");
 
-// Log program IDs for debugging
+// Log program IDs and functions for debugging
 console.log("TOKEN_PROGRAM_ID:", TOKEN_PROGRAM_ID?.toBase58?.());
 console.log("ASSOCIATED_TOKEN_PROGRAM_ID:", ASSOCIATED_TOKEN_PROGRAM_ID?.toBase58?.());
+console.log("createTransferInstruction:", typeof createTransferInstruction);
 
 // Solana connection
 const connection = new Connection("https://api.mainnet-beta.solana.com", "confirmed");
@@ -57,6 +59,29 @@ async function getAssociatedTokenAddress(mintInput, ownerInput) {
 
 // Use custom getAssociatedTokenAddress
 const getATA = getAssociatedTokenAddress;
+
+// Fallback for createTransferInstruction
+function createTransferInstructionFallback(source, destination, owner, amount, multiSigners = [], programId = TOKEN_PROGRAM_ID) {
+  console.log("Using fallback createTransferInstruction");
+  const keys = [
+    { pubkey: source, isSigner: false, isWritable: true },
+    { pubkey: destination, isSigner: false, isWritable: true },
+    { pubkey: owner, isSigner: true, isWritable: false },
+  ];
+
+  const data = Buffer.alloc(8 + 1);
+  data.writeUInt8(3, 0); // Instruction index for Transfer
+  data.writeBigUInt64LE(BigInt(amount), 1); // Amount
+
+  return new TransactionInstruction({
+    keys,
+    programId,
+    data,
+  });
+}
+
+// Use createTransferInstruction if available, else fallback
+const createTransfer = typeof createTransferInstruction === "function" ? createTransferInstruction : createTransferInstructionFallback;
 
 // Load and validate the donation wallet private key
 const DONATION_WALLET_PRIVATE_KEY = process.env.DONATION_WALLET_PRIVATE_KEY;
@@ -394,7 +419,7 @@ app.post("/submit-suggestion", async (req, res) => {
         );
       }
 
-      // Get token decimals
+      // Get token decimals and create transfer instruction
       try {
         const mintInfo = await connection.getParsedAccountInfo(tokenMint);
         if (!mintInfo.value?.data?.parsed?.info?.decimals) {
@@ -404,7 +429,7 @@ app.post("/submit-suggestion", async (req, res) => {
         console.log("Token decimals:", decimals);
 
         transaction.add(
-          createTransferInstruction(
+          createTransfer(
             userATA,
             donationATA,
             userPublicKey,
