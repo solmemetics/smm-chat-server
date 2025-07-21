@@ -36,10 +36,10 @@ if (donationWalletPrivateKey.length !== 64) {
   throw new Error(`Invalid private key size: expected 64 bytes, got ${donationWalletPrivateKey.length}`);
 }
 const donationWallet = Keypair.fromSecretKey(donationWalletPrivateKey);
-console.log("Donation Wallet Public Key:", donationWallet.publicKey.toBase58()); // Should match Cj64jfCQ2dR5Utf62nMnmEq8fjerAk4u1mZY1Hv53QZA
+console.log("Donation Wallet Public Key:", donationWallet.publicKey.toBase58()); // Should match Hs7LzaMG6vrhfnHmJXhPx98uyYyEscdXT93dLKKxWQYF
 
 // Admin wallet (creator wallet)
-const ADMIN_WALLET = new PublicKey("Cj64jfCQ2dR5Utf62nMnmEq8fjerAk4u1mZY1Hv53QZA");
+const ADMIN_WALLET = new PublicKey("Hs7LzaMG6vrhfnHmJXhPx98uyYyEscdXT93dLKKxWQYF");
 
 // Initialize files
 async function initFiles() {
