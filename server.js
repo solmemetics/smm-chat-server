@@ -22,16 +22,30 @@ const connection = new Connection("https://api.mainnet-beta.solana.com", "confir
 // ATA function
 const ASSOCIATED_TOKEN_PROGRAM_ID = new PublicKey("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL");
 async function getAssociatedTokenAddress(mint, owner) {
-  return (
-    await PublicKey.findProgramAddress(
-      [
-        owner.toBuffer(),
-        TOKEN_PROGRAM_ID.toBuffer(),
-        mint.toBuffer(),
-      ],
-      ASSOCIATED_TOKEN_PROGRAM_ID
-    )
-  )[0];
+  if (!mint || !owner) {
+    console.error("getAssociatedTokenAddress: Invalid input", { mint: mint?.toBase58?.() || "undefined", owner: owner?.toBase58?.() || "undefined" });
+    throw new Error("Mint or owner is undefined");
+  }
+  if (!(mint instanceof PublicKey) || !(owner instanceof PublicKey)) {
+    console.error("getAssociatedTokenAddress: Invalid PublicKey", { mint: mint?.toBase58?.() || "not a PublicKey", owner: owner?.toBase58?.() || "not a PublicKey" });
+    throw new Error("Mint or owner is not a valid PublicKey");
+  }
+  try {
+    console.log("Computing ATA for mint:", mint.toBase58(), "owner:", owner.toBase58());
+    return (
+      await PublicKey.findProgramAddress(
+        [
+          owner.toBuffer(),
+          TOKEN_PROGRAM_ID.toBuffer(),
+          mint.toBuffer(),
+        ],
+        ASSOCIATED_TOKEN_PROGRAM_ID
+      )
+    )[0];
+  } catch (err) {
+    console.error("Error in findProgramAddress:", err.message);
+    throw err;
+  }
 }
 
 // Load and validate the donation wallet private key
@@ -160,6 +174,7 @@ async function saveSuggestions(suggestions) {
   }
 }
 
+// Initialize files
 initFiles();
 
 // Enable CORS
@@ -233,7 +248,7 @@ app.get("/suggestions", async (req, res) => {
   }
 });
 
-// Endpoint to submit suggestion and process donation
+// Endpoint to prepare suggestion transaction
 app.post("/submit-suggestion", async (req, res) => {
   try {
     const { wallet, suggestion, token, amount } = req.body;
@@ -249,6 +264,7 @@ app.post("/submit-suggestion", async (req, res) => {
     let userPublicKey;
     try {
       userPublicKey = new PublicKey(wallet);
+      console.log("Validated userPublicKey:", userPublicKey.toBase58());
     } catch (err) {
       console.error("Invalid wallet address:", err.message);
       return res.status(400).json({ error: "Invalid wallet address" });
@@ -258,10 +274,18 @@ app.post("/submit-suggestion", async (req, res) => {
     let tokenMint;
     try {
       tokenMint = new PublicKey(token);
+      console.log("Validated tokenMint:", tokenMint.toBase58());
     } catch (err) {
       console.error("Invalid token mint:", err.message);
       return res.status(400).json({ error: "Invalid token mint address" });
     }
+
+    // Validate donation wallet
+    if (!donationWallet || !donationWallet.publicKey) {
+      console.error("Donation wallet not initialized");
+      return res.status(500).json({ error: "Server configuration error: Donation wallet not initialized" });
+    }
+    console.log("Donation wallet public key:", donationWallet.publicKey.toBase58());
 
     const users = await loadUsers();
     const username = users[wallet] || wallet.slice(0, 6);
@@ -280,6 +304,7 @@ app.post("/submit-suggestion", async (req, res) => {
       try {
         userATA = await getAssociatedTokenAddress(tokenMint, userPublicKey);
         donationATA = await getAssociatedTokenAddress(tokenMint, donationWallet.publicKey);
+        console.log("User ATA:", userATA.toBase58(), "Donation ATA:", donationATA.toBase58());
       } catch (err) {
         console.error("Error getting ATA:", err.message);
         return res.status(500).json({ error: "Failed to get associated token address" });
@@ -303,6 +328,7 @@ app.post("/submit-suggestion", async (req, res) => {
       try {
         const mintInfo = await connection.getParsedAccountInfo(tokenMint);
         decimals = mintInfo.value?.data?.parsed?.info?.decimals || 6; // Default to 6 if unavailable
+        console.log("Token decimals:", decimals);
       } catch (err) {
         console.error("Error getting token decimals:", err.message);
         return res.status(500).json({ error: "Failed to get token decimals" });
@@ -329,20 +355,54 @@ app.post("/submit-suggestion", async (req, res) => {
       transaction.recentBlockhash = (await connection.getLatestBlockhash()).blockhash;
       transaction.feePayer = userPublicKey;
       const serializedTx = transaction.serialize({ requireAllSignatures: false }).toString("base64");
-      
-      const newSuggestion = { username, wallet, suggestion, token, amount, timestamp: new Date().toISOString() };
-      const suggestions = await loadSuggestions();
-      suggestions.push(newSuggestion);
-      await saveSuggestions(suggestions);
-
-      res.json({ message: "Suggestion submitted, please sign transaction", transaction: serializedTx });
+      console.log("Transaction serialized, sending to client");
+      res.json({ message: "Please sign transaction", transaction: serializedTx, suggestionData: { username, wallet, suggestion, token, amount } });
     } catch (err) {
-      console.error("Error serializing transaction or saving suggestion:", err.message);
-      return res.status(500).json({ error: "Failed to process transaction or save suggestion" });
+      console.error("Error serializing transaction:", err.message);
+      return res.status(500).json({ error: "Failed to process transaction" });
     }
   } catch (err) {
     console.error("Unexpected error in /submit-suggestion:", err);
     res.status(500).json({ error: `Unexpected error: ${err.message}` });
+  }
+});
+
+// Endpoint to confirm suggestion after transaction
+app.post("/confirm-suggestion", async (req, res) => {
+  try {
+    const { wallet, suggestion, token, amount, signature } = req.body;
+    console.log("Received /confirm-suggestion request:", { wallet, suggestion, token, amount, signature });
+
+    // Validate inputs
+    if (!wallet || !suggestion || !token || amount === undefined || !signature) {
+      console.log("Validation failed: Missing parameters in /confirm-suggestion");
+      return res.status(400).json({ error: "Wallet, suggestion, token, amount, and signature required" });
+    }
+
+    // Verify transaction signature
+    try {
+      const result = await connection.getSignatureStatus(signature);
+      if (!result.value || result.value.confirmationStatus !== "confirmed") {
+        console.error("Transaction not confirmed:", signature);
+        return res.status(400).json({ error: "Transaction not confirmed" });
+      }
+      console.log("Transaction confirmed:", signature);
+    } catch (err) {
+      console.error("Error verifying transaction:", err.message);
+      return res.status(400).json({ error: "Failed to verify transaction" });
+    }
+
+    const users = await loadUsers();
+    const username = users[wallet] || wallet.slice(0, 6);
+    const newSuggestion = { username, wallet, suggestion, token, amount, timestamp: new Date().toISOString(), signature };
+    const suggestions = await loadSuggestions();
+    suggestions.push(newSuggestion);
+    await saveSuggestions(suggestions);
+
+    res.json({ message: "Suggestion confirmed and saved" });
+  } catch (err) {
+    console.error("Error in /confirm-suggestion:", err);
+    res.status(500).json({ error: "Failed to save suggestion" });
   }
 });
 
