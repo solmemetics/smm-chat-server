@@ -4,8 +4,8 @@ const http = require("http");
 const fs = require("fs").promises;
 const path = require("path");
 const WebSocket = require("ws");
-const { Keypair, Connection, Transaction, SystemProgram, LAMPORTS_PER_SOL, PublicKey } = require("@solana/web3.js");
-const { getAssociatedTokenAddress, createAssociatedTokenAccountInstruction, TOKEN_PROGRAM_ID, createTransferInstruction } = require("@solana/spl-token");
+const { Keypair, Connection, Transaction, SystemProgram, LAMPORTS_PER_SOL, PublicKey, TOKEN_PROGRAM_ID } = require("@solana/web3.js");
+const { createAssociatedTokenAccountInstruction, createTransferInstruction } = require("@solana/spl-token");
 
 const app = express();
 const server = http.createServer(app);
@@ -18,6 +18,21 @@ const SUGGESTIONS_FILE = path.join(__dirname, "suggestions.json");
 
 // Solana connection
 const connection = new Connection("https://api.mainnet-beta.solana.com", "confirmed");
+
+// ATA function
+const ASSOCIATED_TOKEN_PROGRAM_ID = new PublicKey("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL");
+async function getAssociatedTokenAddress(mint, owner) {
+  return (
+    await PublicKey.findProgramAddress(
+      [
+        owner.toBuffer(),
+        TOKEN_PROGRAM_ID.toBuffer(),
+        mint.toBuffer(),
+      ],
+      ASSOCIATED_TOKEN_PROGRAM_ID
+    )
+  )[0];
+}
 
 // Load and validate the donation wallet private key
 const DONATION_WALLET_PRIVATE_KEY = process.env.DONATION_WALLET_PRIVATE_KEY;
