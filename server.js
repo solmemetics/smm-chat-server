@@ -315,10 +315,13 @@ app.post("/test-ata", async (req, res) => {
     try {
       const result = {};
       console.log("Testing user ATA for:", { mint: mintPubkey.toBase58(), owner: ownerPubkey.toBase58() });
-      result.userATA = (await getATA(mintPubkey, ownerPubkey)).toBase58();
+      const mintKey = new PublicKey(mintPubkey);
+      const ownerKey = new PublicKey(ownerPubkey);
+      result.userATA = (await getATA(mintKey, ownerKey)).toBase58();
       if (testDonationWallet) {
         console.log("Testing donation wallet ATA for:", { mint: mintPubkey.toBase58(), owner: donationPubkey.toBase58() });
-        result.donationATA = (await getATA(mintPubkey, donationPubkey)).toBase58();
+        const donationKey = new PublicKey(donationPubkey);
+        result.donationATA = (await getATA(mintKey, donationKey)).toBase58();
       }
       res.json({ success: true, ...result });
     } catch (err) {
@@ -409,9 +412,12 @@ app.post("/submit-suggestion", async (req, res) => {
       let userATA, donationATA;
       try {
         console.log("Fetching user ATA for:", { mint: tokenMint.toBase58(), owner: userPublicKey.toBase58() });
-        userATA = await getATA(tokenMint, userPublicKey);
+        const mintKey = new PublicKey(tokenMint);
+        const ownerKey = new PublicKey(userPublicKey);
+        userATA = await getATA(mintKey, ownerKey);
         console.log("Fetching donation ATA for:", { mint: tokenMint.toBase58(), owner: donationWallet.publicKey.toBase58() });
-        donationATA = await getATA(tokenMint, donationWallet.publicKey);
+        const donationKey = new PublicKey(donationWallet.publicKey);
+        donationATA = await getATA(mintKey, donationKey);
         console.log("User ATA:", userATA.toBase58(), "Donation ATA:", donationATA.toBase58());
       } catch (err) {
         console.error("Error getting ATA:", err.message);
