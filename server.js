@@ -5,7 +5,7 @@ const fs = require("fs").promises;
 const path = require("path");
 const WebSocket = require("ws");
 const { Keypair, Connection, Transaction, SystemProgram, LAMPORTS_PER_SOL, PublicKey, TOKEN_PROGRAM_ID } = require("@solana/web3.js");
-const { createAssociatedTokenAccountInstruction, createTransferInstruction, getAssociatedTokenAddress } = require("@solana/spl-token");
+const { createAssociatedTokenAccountInstruction, createTransferInstruction } = require("@solana/spl-token");
 
 const app = express();
 const server = http.createServer(app);
@@ -19,81 +19,34 @@ const SUGGESTIONS_FILE = path.join(__dirname, "suggestions.json");
 // Solana connection
 const connection = new Connection("https://api.mainnet-beta.solana.com", "confirmed");
 
-// Fallback ATA function
+// Custom ATA function
 const ASSOCIATED_TOKEN_PROGRAM_ID = new PublicKey("ATokenGVdDGrw5uGzXBNzMuGZvx7bGTp4GVRZBe8KMP");
-async function customGetAssociatedTokenAddress(mint, owner) {
-  if (!mint || !owner) {
-    console.error("customGetAssociatedTokenAddress: Invalid input", {
-      mint: mint?.toBase58?.() || "undefined",
-      owner: owner?.toBase58?.() || "undefined",
-    });
-    throw new Error("Mint or owner is undefined");
-  }
-  if (!(mint instanceof PublicKey) || !(owner instanceof PublicKey)) {
-    console.error("customGetAssociatedTokenAddress: Invalid PublicKey", {
-      mint: mint?.toBase58?.() || "not a PublicKey",
-      owner: owner?.toBase58?.() || "not a PublicKey",
-    });
-    throw new Error("Mint or owner is not a valid PublicKey");
-  }
+async function getAssociatedTokenAddress(mintInput, ownerInput) {
   try {
-    const mintStr = mint.toBase58();
-    const ownerStr = owner.toBase58();
-    if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(mintStr) || !/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(ownerStr)) {
-      console.error("Invalid PublicKey format", { mint: mintStr, owner: ownerStr });
-      throw new Error("Invalid PublicKey format");
-    }
-    const mintBytes = mint.toBytes();
-    const ownerBytes = owner.toBytes();
-    if (!mintBytes || mintBytes.length !== 32 || !ownerBytes || ownerBytes.length !== 32) {
-      console.error("PublicKey toBytes() failed", {
-        mint: mintStr,
-        owner: ownerStr,
-        mintBytesLength: mintBytes?.length,
-        ownerBytesLength: ownerBytes?.length,
-      });
-      throw new Error("Invalid PublicKey: toBytes() returned invalid data");
-    }
-    console.log("Validating PublicKey buffers:", { mint: mintBytes.length, owner: ownerBytes.length });
-    console.log("Attempting toBuffer for mint:", mintStr);
-    const mintBuffer = mint.toBuffer();
-    console.log("mint.toBuffer() succeeded, length:", mintBuffer?.length);
-    console.log("Attempting toBuffer for owner:", ownerStr);
-    const ownerBuffer = owner.toBuffer();
-    console.log("owner.toBuffer() succeeded, length:", ownerBuffer?.length);
-    console.log("Attempting toBuffer for TOKEN_PROGRAM_ID:", TOKEN_PROGRAM_ID.toBase58());
-    const tokenProgramBuffer = TOKEN_PROGRAM_ID.toBuffer();
-    console.log("TOKEN_PROGRAM_ID.toBuffer() succeeded, length:", tokenProgramBuffer?.length);
-    console.log("Attempting toBuffer for ASSOCIATED_TOKEN_PROGRAM_ID:", ASSOCIATED_TOKEN_PROGRAM_ID.toBase58());
-    const associatedProgramBuffer = ASSOCIATED_TOKEN_PROGRAM_ID.toBuffer();
-    console.log("ASSOCIATED_TOKEN_PROGRAM_ID.toBuffer() succeeded, length:", associatedProgramBuffer?.length);
-    if (!mintBuffer || !ownerBuffer || !tokenProgramBuffer || !associatedProgramBuffer) {
-      console.error("toBuffer() returned null", {
-        mintBuffer: !!mintBuffer,
-        ownerBuffer: !!ownerBuffer,
-        tokenProgramBuffer: !!tokenProgramBuffer,
-        associatedProgramBuffer: !!associatedProgramBuffer,
-      });
-      throw new Error("toBuffer() failed for one or more PublicKeys");
-    }
-    console.log("Computing ATA for mint:", mintStr, "owner:", ownerStr);
+    const mint = mintInput instanceof PublicKey ? mintInput : new PublicKey(mintInput);
+    const owner = ownerInput instanceof PublicKey ? ownerInput : new PublicKey(ownerInput);
+
+    console.log("mint.toBase58():", mint.toBase58());
+    console.log("owner.toBase58():", owner.toBase58());
+
     const [ata] = await PublicKey.findProgramAddress(
-      [ownerBuffer, tokenProgramBuffer, mintBuffer],
+      [
+        owner.toBuffer(),
+        TOKEN_PROGRAM_ID.toBuffer(),
+        mint.toBuffer(),
+      ],
       ASSOCIATED_TOKEN_PROGRAM_ID
     );
-    console.log("Computed ATA:", ata.toBase58());
+
     return ata;
-  } catch (err) {
-    console.error("Error in findProgramAddress:", err.message, {
-      mint: typeof mint === "object" && mint.toBase58 ? mint.toBase58() : "undefined",
-      owner: typeof owner === "object" && owner.toBase58 ? owner.toBase58() : "undefined",
-    });
-    throw new Error(`Failed to compute ATA: ${err.message}`);
+  } catch (e) {
+    console.error("❌ Error in findProgramAddress:", e.message, { mint: mintInput, owner: ownerInput });
+    throw new Error("Failed to compute ATA: " + e.message);
   }
 }
 
-// Use built-in getAssociatedTokenAddress if available, else fallback
-const getATA = typeof getAssociatedTokenAddress === "function" ? getAssociatedTokenAddress : customGetAssociatedTokenAddress;
+// Use custom getAssociatedTokenAddress
+const getATA = getAssociatedTokenAddress;
 
 // Load and validate the donation wallet private key
 const DONATION_WALLET_PRIVATE_KEY = process.env.DONATION_WALLET_PRIVATE_KEY;
