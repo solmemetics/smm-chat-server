@@ -4,8 +4,8 @@ const http = require("http");
 const fs = require("fs").promises;
 const path = require("path");
 const WebSocket = require("ws");
-const { Keypair, Connection, Transaction, SystemProgram, LAMPORTS_PER_SOL, PublicKey, TOKEN_PROGRAM_ID } = require("@solana/web3.js");
-const { createAssociatedTokenAccountInstruction, createTransferInstruction } = require("@solana/spl-token");
+const { Keypair, Connection, Transaction, SystemProgram, LAMPORTS_PER_SOL, PublicKey } = require("@solana/web3.js");
+const { createAssociatedTokenAccountInstruction, createTransferInstruction, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID } = require("@solana/spl-token");
 
 const app = express();
 const server = http.createServer(app);
@@ -16,18 +16,27 @@ const MESSAGES_FILE = path.join(__dirname, "messages.json");
 const USERS_FILE = path.join(__dirname, "user.json");
 const SUGGESTIONS_FILE = path.join(__dirname, "suggestions.json");
 
+// Log program IDs for debugging
+console.log("TOKEN_PROGRAM_ID:", TOKEN_PROGRAM_ID?.toBase58?.());
+console.log("ASSOCIATED_TOKEN_PROGRAM_ID:", ASSOCIATED_TOKEN_PROGRAM_ID?.toBase58?.());
+
 // Solana connection
 const connection = new Connection("https://api.mainnet-beta.solana.com", "confirmed");
 
 // Custom ATA function
-const ASSOCIATED_TOKEN_PROGRAM_ID = new PublicKey("ATokenGVdDGrw5uGzXBNzMuGZvx7bGTp4GVRZBe8KMP");
 async function getAssociatedTokenAddress(mintInput, ownerInput) {
   try {
     const mint = mintInput instanceof PublicKey ? mintInput : new PublicKey(mintInput);
     const owner = ownerInput instanceof PublicKey ? ownerInput : new PublicKey(ownerInput);
 
+    if (!TOKEN_PROGRAM_ID || !ASSOCIATED_TOKEN_PROGRAM_ID) {
+      throw new Error("Missing TOKEN_PROGRAM_ID or ASSOCIATED_TOKEN_PROGRAM_ID");
+    }
+
     console.log("mint.toBase58():", mint.toBase58());
     console.log("owner.toBase58():", owner.toBase58());
+    console.log("TOKEN_PROGRAM_ID.toBase58():", TOKEN_PROGRAM_ID.toBase58());
+    console.log("ASSOCIATED_TOKEN_PROGRAM_ID.toBase58():", ASSOCIATED_TOKEN_PROGRAM_ID.toBase58());
 
     const [ata] = await PublicKey.findProgramAddress(
       [
@@ -38,6 +47,7 @@ async function getAssociatedTokenAddress(mintInput, ownerInput) {
       ASSOCIATED_TOKEN_PROGRAM_ID
     );
 
+    console.log("Computed ATA:", ata.toBase58());
     return ata;
   } catch (e) {
     console.error("❌ Error in findProgramAddress:", e.message, { mint: mintInput, owner: ownerInput });
@@ -268,13 +278,10 @@ app.post("/test-ata", async (req, res) => {
     try {
       const result = {};
       console.log("Testing user ATA for:", { mint: mintPubkey.toBase58(), owner: ownerPubkey.toBase58() });
-      const mintKey = new PublicKey(mintPubkey);
-      const ownerKey = new PublicKey(ownerPubkey);
-      result.userATA = (await getATA(mintKey, ownerKey)).toBase58();
+      result.userATA = (await getATA(mintPubkey, ownerPubkey)).toBase58();
       if (testDonationWallet) {
         console.log("Testing donation wallet ATA for:", { mint: mintPubkey.toBase58(), owner: donationPubkey.toBase58() });
-        const donationKey = new PublicKey(donationPubkey);
-        result.donationATA = (await getATA(mintKey, donationKey)).toBase58();
+        result.donationATA = (await getATA(mintPubkey, donationPubkey)).toBase58();
       }
       res.json({ success: true, ...result });
     } catch (err) {
@@ -365,12 +372,9 @@ app.post("/submit-suggestion", async (req, res) => {
       let userATA, donationATA;
       try {
         console.log("Fetching user ATA for:", { mint: tokenMint.toBase58(), owner: userPublicKey.toBase58() });
-        const mintKey = new PublicKey(tokenMint);
-        const ownerKey = new PublicKey(userPublicKey);
-        userATA = await getATA(mintKey, ownerKey);
+        userATA = await getATA(tokenMint, userPublicKey);
         console.log("Fetching donation ATA for:", { mint: tokenMint.toBase58(), owner: donationWallet.publicKey.toBase58() });
-        const donationKey = new PublicKey(donationWallet.publicKey);
-        donationATA = await getATA(mintKey, donationKey);
+        donationATA = await getATA(tokenMint, donationWallet.publicKey);
         console.log("User ATA:", userATA.toBase58(), "Donation ATA:", donationATA.toBase58());
       } catch (err) {
         console.error("Error getting ATA:", err.message);
@@ -391,20 +395,14 @@ app.post("/submit-suggestion", async (req, res) => {
       }
 
       // Get token decimals
-      let decimals;
       try {
         const mintInfo = await connection.getParsedAccountInfo(tokenMint);
         if (!mintInfo.value?.data?.parsed?.info?.decimals) {
           throw new Error("Unable to fetch token decimals");
         }
-        decimals = mintInfo.value.data.parsed.info.decimals;
+        const decimals = mintInfo.value.data.parsed.info.decimals;
         console.log("Token decimals:", decimals);
-      } catch (err) {
-        console.error("Error getting token decimals:", err.message);
-        return res.status(500).json({ error: "Failed to get token decimals" });
-      }
 
-      try {
         transaction.add(
           createTransferInstruction(
             userATA,
@@ -416,8 +414,8 @@ app.post("/submit-suggestion", async (req, res) => {
           )
         );
       } catch (err) {
-        console.error("Error creating transfer instruction:", err.message);
-        return res.status(500).json({ error: "Failed to create token transfer instruction" });
+        console.error("Error creating transfer instruction or fetching decimals:", err.message);
+        return res.status(500).json({ error: "Failed to create token transfer instruction or fetch decimals" });
       }
     }
 
