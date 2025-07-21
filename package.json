@@ -1,27 +1,19 @@
 {
   "name": "smm-chat-server",
   "version": "1.0.0",
-  "main": "server.js",
+  "private": true,
   "scripts": {
-    "start": "node server.js",
-    "dev": "nodemon server.js"
+    "start": "node server.js"
   },
   "dependencies": {
-  "@solana/web3.js": "^1.98.2",
-  "@solana/spl-token": "^0.4.8",
-  "express": "^4.18.2",
-  "ws": "^8.14.2",
-  "dotenv": "^16.3.1"
-},
+    "@solana/web3.js": "^1.98.2",
+    "@solana/spl-token": "^0.4.13",
+    "express": "^4.18.2",
+    "ws": "^8.14.2",
+    "dotenv": "^16.3.1"
+  },
   "devDependencies": {
     "nodemon": "^3.1.4"
-  },
-  "overrides": {
-    "@solana/spl-token": {
-      "@solana/buffer-layout-utils": {
-        "bigint-buffer": "1.1.5"
-      }
-    }
   },
   "keywords": [
     "solana",
