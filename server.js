@@ -43,18 +43,30 @@ async function getAssociatedTokenAddress(mint, owner) {
       console.error("Invalid PublicKey format", { mint: mintStr, owner: ownerStr });
       throw new Error("Invalid PublicKey format");
     }
-    console.log("Validating PublicKey buffers:", { mint: Buffer.from(mint.toBytes()).length, owner: Buffer.from(owner.toBytes()).length });
-    if (!mint.toBytes() || !owner.toBytes()) {
-      console.error("PublicKey toBytes() failed", { mint: mintStr, owner: ownerStr });
-      throw new Error("Invalid PublicKey: toBytes() returned null or undefined");
+    const mintBytes = mint.toBytes();
+    const ownerBytes = owner.toBytes();
+    if (!mintBytes || mintBytes.length !== 32 || !ownerBytes || ownerBytes.length !== 32) {
+      console.error("PublicKey toBytes() failed", { mint: mintStr, owner: ownerStr, mintBytesLength: mintBytes?.length, ownerBytesLength: ownerBytes?.length });
+      throw new Error("Invalid PublicKey: toBytes() returned invalid data");
+    }
+    console.log("Validating PublicKey buffers:", { mint: mintBytes.length, owner: ownerBytes.length });
+    console.log("Attempting toBuffer for mint:", mintStr);
+    const mintBuffer = mint.toBuffer();
+    console.log("Attempting toBuffer for owner:", ownerStr);
+    const ownerBuffer = owner.toBuffer();
+    console.log("Attempting toBuffer for TOKEN_PROGRAM_ID");
+    const tokenProgramBuffer = TOKEN_PROGRAM_ID.toBuffer();
+    if (!mintBuffer || !ownerBuffer || !tokenProgramBuffer) {
+      console.error("toBuffer() returned null", {
+        mintBuffer: !!mintBuffer,
+        ownerBuffer: !!ownerBuffer,
+        tokenProgramBuffer: !!tokenProgramBuffer,
+      });
+      throw new Error("toBuffer() failed for one or more PublicKeys");
     }
     console.log("Computing ATA for mint:", mintStr, "owner:", ownerStr);
     const [ata] = await PublicKey.findProgramAddress(
-      [
-        owner.toBuffer() || Buffer.alloc(32), // Fallback to avoid undefined
-        TOKEN_PROGRAM_ID.toBuffer(),
-        mint.toBuffer() || Buffer.alloc(32), // Fallback to avoid undefined
-      ],
+      [ownerBuffer, tokenProgramBuffer, mintBuffer],
       ASSOCIATED_TOKEN_PROGRAM_ID
     );
     console.log("Computed ATA:", ata.toBase58());
@@ -263,6 +275,35 @@ app.get("/suggestions", async (req, res) => {
     res.json(suggestions);
   } catch (err) {
     res.status(500).json({ error: "Error reading suggestions" });
+  }
+});
+
+// Debug endpoint for ATA
+app.post("/test-ata", async (req, res) => {
+  try {
+    const { mint, owner } = req.body;
+    console.log("Received /test-ata request:", { mint, owner });
+    if (!mint || !owner) {
+      return res.status(400).json({ error: "Mint and owner required" });
+    }
+    let mintPubkey, ownerPubkey;
+    try {
+      mintPubkey = new PublicKey(mint);
+      ownerPubkey = new PublicKey(owner);
+    } catch (err) {
+      console.error("Invalid PublicKey in /test-ata:", err.message, { mint, owner });
+      return res.status(400).json({ error: "Invalid mint or owner address" });
+    }
+    try {
+      const ata = await getAssociatedTokenAddress(mintPubkey, ownerPubkey);
+      res.json({ success: true, ata: ata.toBase58() });
+    } catch (err) {
+      console.error("Error computing ATA in /test-ata:", err.message);
+      res.status(500).json({ error: `Failed to compute ATA: ${err.message}` });
+    }
+  } catch (err) {
+    console.error("Unexpected error in /test-ata:", err);
+    res.status(500).json({ error: `Unexpected error: ${err.message}` });
   }
 });
 
