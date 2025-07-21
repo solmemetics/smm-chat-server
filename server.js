@@ -4,7 +4,7 @@ const http = require("http");
 const fs = require("fs").promises;
 const path = require("path");
 const WebSocket = require("ws");
-const { Keypair, Connection, Transaction, SystemProgram, LAMPORTS_PER_SOL, PublicKey, TransactionInstruction } = require("@solana/web3.js");
+const { Keypair, Connection, Transaction, SystemProgram, LAMPORTS_PER_SOL, PublicKey } = require("@solana/web3.js");
 const { getAssociatedTokenAddress, createAssociatedTokenAccountInstruction, TOKEN_PROGRAM_ID, createTransferInstruction } = require("@solana/spl-token");
 
 const app = express();
@@ -20,16 +20,23 @@ const SUGGESTIONS_FILE = path.join(__dirname, "suggestions.json");
 const connection = new Connection("https://api.mainnet-beta.solana.com", "confirmed");
 
 // Load and validate the donation wallet private key
-const DONATION_WALLET_PRIVATE_KEY = process.env.DEV_WALLET_PRIVATE_KEY; // Using DEV_WALLET_PRIVATE_KEY from .env as per your file
+const DONATION_WALLET_PRIVATE_KEY = process.env.DONATION_WALLET_PRIVATE_KEY;
+console.log("Raw DONATION_WALLET_PRIVATE_KEY:", DONATION_WALLET_PRIVATE_KEY); // Debug
 if (!DONATION_WALLET_PRIVATE_KEY) {
-  throw new Error("DEV_WALLET_PRIVATE_KEY not set in .env (used for DONATION_WALLET)");
+  throw new Error("DONATION_WALLET_PRIVATE_KEY not set in .env");
 }
-const donationWalletPrivateKey = Uint8Array.from(JSON.parse(DONATION_WALLET_PRIVATE_KEY));
+let donationWalletPrivateKey;
+try {
+  donationWalletPrivateKey = Uint8Array.from(JSON.parse(DONATION_WALLET_PRIVATE_KEY));
+} catch (err) {
+  console.error("Failed to parse DONATION_WALLET_PRIVATE_KEY:", err.message);
+  throw new Error("Invalid DONATION_WALLET_PRIVATE_KEY format in .env");
+}
 if (donationWalletPrivateKey.length !== 64) {
   throw new Error(`Invalid private key size: expected 64 bytes, got ${donationWalletPrivateKey.length}`);
 }
 const donationWallet = Keypair.fromSecretKey(donationWalletPrivateKey);
-console.log("Donation Wallet Public Key:", donationWallet.publicKey.toBase58()); // Should match Hs7LzaMG6vrhfnHmJXhPx98uyYyEscdXT93dLKKxWQYF
+console.log("Donation Wallet Public Key:", donationWallet.publicKey.toBase58()); // Should match Cj64jfCQ2dR5Utf62nMnmEq8fjerAk4u1mZY1Hv53QZA
 
 // Admin wallet (creator wallet)
 const ADMIN_WALLET = new PublicKey("Cj64jfCQ2dR5Utf62nMnmEq8fjerAk4u1mZY1Hv53QZA");
@@ -126,9 +133,13 @@ async function saveSuggestions(suggestions) {
 
 initFiles();
 
-// Enable CORS for GitHub Pages origin
+// Enable CORS for GitHub Pages and local testing
 app.use((req, res, next) => {
-  res.header("Access-Control-Allow-Origin", "https://app.solmemetics.com");
+  const allowedOrigins = ["https://app.solmemetics.com", "http://localhost:3000"];
+  const origin = req.headers.origin;
+  if (allowedOrigins.includes(origin)) {
+    res.header("Access-Control-Allow-Origin", origin);
+  }
   res.header("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   res.header("Access-Control-Allow-Headers", "Content-Type");
   if (req.method === "OPTIONS") {
@@ -202,44 +213,47 @@ app.post("/submit-suggestion", async (req, res) => {
     const userPublicKey = new PublicKey(wallet);
     const tokenMint = new PublicKey(token);
 
-    // Create transaction to transfer to donation wallet
     let transaction = new Transaction();
     if (token === "So11111111111111111111111111111111111111112") { // SOL
       transaction.add(
         SystemProgram.transfer({
           fromPubkey: userPublicKey,
-          toPubkey: donationWallet.publicKey, // Donation wallet as recipient
+          toPubkey: donationWallet.publicKey,
           lamports: Math.floor(amount * LAMPORTS_PER_SOL),
         })
       );
     } else { // Token
       const userATA = await getAssociatedTokenAddress(tokenMint, userPublicKey);
       const donationATA = await getAssociatedTokenAddress(tokenMint, donationWallet.publicKey);
-      const createDonationATAIx = createAssociatedTokenAccountInstruction(
-        donationWallet.publicKey,
-        donationATA,
-        donationWallet.publicKey,
-        tokenMint
+      // Check if donation ATA exists
+      const donationATAInfo = await connection.getAccountInfo(donationATA);
+      if (!donationATAInfo) {
+        transaction.add(
+          createAssociatedTokenAccountInstruction(
+            donationWallet.publicKey, // Payer
+            donationATA,
+            donationWallet.publicKey, // Owner
+            tokenMint
+          )
+        );
+      }
+      transaction.add(
+        createTransferInstruction(
+          userATA,
+          donationATA,
+          userPublicKey,
+          Math.floor(amount * 10 ** 6), // Assuming 6 decimals for SMM/USDC
+          [],
+          TOKEN_PROGRAM_ID
+        )
       );
-      const transferIx = createTransferInstruction(
-        userATA,
-        donationATA,
-        userPublicKey,
-        Math.floor(amount * 10 ** 6), // Assuming 6 decimals for tokens like SMM/USDC
-        [],
-        TOKEN_PROGRAM_ID
-      );
-      transaction.add(createDonationATAIx, transferIx);
     }
 
-    // Set recent blockhash and fee payer
     transaction.recentBlockhash = (await connection.getLatestBlockhash()).blockhash;
     transaction.feePayer = userPublicKey;
 
-    // Serialize transaction (user must sign)
     const serializedTx = transaction.serialize({ requireAllSignatures: false }).toString("base64");
 
-    // Store suggestion
     const newSuggestion = { username, wallet, suggestion, token, amount, timestamp: new Date().toISOString() };
     const suggestions = await loadSuggestions();
     suggestions.push(newSuggestion);
@@ -256,7 +270,6 @@ wss.on("connection", async (ws, req) => {
   const clientIp = req.socket.remoteAddress;
   console.log(`New client connected from ${clientIp}`);
 
-  // Send existing messages
   const messages = await loadMessages();
   messages.forEach((msg) => {
     if (ws.readyState === WebSocket.OPEN) {
