@@ -23,20 +23,34 @@ const connection = new Connection("https://api.mainnet-beta.solana.com", "confir
 const DONATION_WALLET_PRIVATE_KEY = process.env.DONATION_WALLET_PRIVATE_KEY;
 console.log("Raw DONATION_WALLET_PRIVATE_KEY:", DONATION_WALLET_PRIVATE_KEY); // Debug
 if (!DONATION_WALLET_PRIVATE_KEY) {
-  throw new Error("DONATION_WALLET_PRIVATE_KEY not set in .env");
+  console.error("Environment Error: DONATION_WALLET_PRIVATE_KEY not set in .env");
+  process.exit(1);
 }
 let donationWalletPrivateKey;
 try {
   donationWalletPrivateKey = Uint8Array.from(JSON.parse(DONATION_WALLET_PRIVATE_KEY));
 } catch (err) {
-  console.error("Failed to parse DONATION_WALLET_PRIVATE_KEY:", err.message);
-  throw new Error("Invalid DONATION_WALLET_PRIVATE_KEY format in .env");
+  console.error("Parsing Error: Failed to parse DONATION_WALLET_PRIVATE_KEY:", err.message);
+  console.error("Ensure the .env file contains a valid JSON array with 64 numbers, e.g., [123,45,67,...,89]");
+  process.exit(1);
 }
 if (donationWalletPrivateKey.length !== 64) {
-  throw new Error(`Invalid private key size: expected 64 bytes, got ${donationWalletPrivateKey.length}`);
+  console.error(`Validation Error: Invalid private key size: expected 64 bytes, got ${donationWalletPrivateKey.length}`);
+  process.exit(1);
 }
-const donationWallet = Keypair.fromSecretKey(donationWalletPrivateKey);
-console.log("Donation Wallet Public Key:", donationWallet.publicKey.toBase58()); // Should match Hs7LzaMG6vrhfnHmJXhPx98uyYyEscdXT93dLKKxWQYF
+let donationWallet;
+try {
+  donationWallet = Keypair.fromSecretKey(donationWalletPrivateKey);
+  console.log("Donation Wallet Public Key:", donationWallet.publicKey.toBase58()); // Should match Hs7LzaMG6vrhfnHmJXhPx98uyYyEscdXT93dLKKxWQYF
+  if (donationWallet.publicKey.toBase58() !== "Hs7LzaMG6vrhfnHmJXhPx98uyYyEscdXT93dLKKxWQYF") {
+    console.error("Validation Error: Derived public key does not match expected Hs7LzaMG6vrhfnHmJXhPx98uyYyEscdXT93dLKKxWQYF");
+    process.exit(1);
+  }
+} catch (err) {
+  console.error("Keypair Error: Failed to create Keypair from secret key:", err.message);
+  console.error("Ensure the private key corresponds to a valid Solana keypair for Hs7LzaMG6vrhfnHmJXhPx98uyYyEscdXT93dLKKxWQYF");
+  process.exit(1);
+}
 
 // Admin wallet (creator wallet)
 const ADMIN_WALLET = new PublicKey("Hs7LzaMG6vrhfnHmJXhPx98uyYyEscdXT93dLKKxWQYF");
@@ -156,7 +170,7 @@ app.get("/messages", async (req, res) => {
     const messages = await loadMessages();
     res.json(messages);
   } catch (err) {
-    res.status(500).send("Error reading messages");
+    res.status(500).json({ error: "Error reading messages" });
   }
 });
 
@@ -166,7 +180,7 @@ app.get("/users", async (req, res) => {
     const users = await loadUsers();
     res.json(users);
   } catch (err) {
-    res.status(500).send("Error reading users");
+    res.status(500).json({ error: "Error reading users" });
   }
 });
 
@@ -176,17 +190,17 @@ app.post("/set-username", async (req, res) => {
     const { wallet, username } = req.body;
     if (!wallet || !username) {
       console.log("Missing wallet or username in request");
-      return res.status(400).send("Wallet and username required");
+      return res.status(400).json({ error: "Wallet and username required" });
     }
     console.log(`Received request to set username ${username} for wallet ${wallet}`);
     const users = await loadUsers();
     users[wallet] = username;
     await saveUsers(users);
     console.log(`Username ${username} set for wallet ${wallet}`);
-    res.send("Username set");
+    res.json({ message: "Username set" });
   } catch (err) {
     console.error("Error setting username:", err);
-    res.status(500).send("Error setting username");
+    res.status(500).json({ error: "Error setting username" });
   }
 });
 
@@ -196,7 +210,7 @@ app.get("/suggestions", async (req, res) => {
     const suggestions = await loadSuggestions();
     res.json(suggestions);
   } catch (err) {
-    res.status(500).send("Error reading suggestions");
+    res.status(500).json({ error: "Error reading suggestions" });
   }
 });
 
@@ -205,7 +219,7 @@ app.post("/submit-suggestion", async (req, res) => {
   try {
     const { wallet, suggestion, token, amount } = req.body;
     if (!wallet || !suggestion || !token || amount === undefined || amount <= 0) {
-      return res.status(400).send("Wallet, suggestion, token, and valid amount required");
+      return res.status(400).json({ error: "Wallet, suggestion, token, and valid amount required" });
     }
     const users = await loadUsers();
     const username = users[wallet] || wallet.slice(0, 6);
@@ -262,7 +276,7 @@ app.post("/submit-suggestion", async (req, res) => {
     res.json({ message: "Suggestion submitted, please sign transaction", transaction: serializedTx });
   } catch (err) {
     console.error("Error submitting suggestion:", err);
-    res.status(500).send("Error submitting suggestion");
+    res.status(500).json({ error: "Error submitting suggestion" });
   }
 });
 
