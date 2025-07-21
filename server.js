@@ -10,6 +10,7 @@ const wss = new WebSocket.Server({ server });
 
 const MESSAGES_FILE = path.join(__dirname, "messages.json");
 const USERS_FILE = path.join(__dirname, "user.json");
+const SUGGESTIONS_FILE = path.join(__dirname, "suggestions.json");
 
 // Initialize files
 async function initFiles() {
@@ -26,6 +27,13 @@ async function initFiles() {
   } catch {
     console.log("Creating new users file");
     await fs.writeFile(USERS_FILE, JSON.stringify({}));
+  }
+  try {
+    await fs.access(SUGGESTIONS_FILE);
+    console.log("Suggestions file exists");
+  } catch {
+    console.log("Creating new suggestions file");
+    await fs.writeFile(SUGGESTIONS_FILE, JSON.stringify([]));
   }
 }
 
@@ -73,11 +81,32 @@ async function saveUsers(users) {
   }
 }
 
+// Load suggestions
+async function loadSuggestions() {
+  try {
+    const data = await fs.readFile(SUGGESTIONS_FILE, "utf8");
+    return JSON.parse(data);
+  } catch (err) {
+    console.error("Error loading suggestions:", err);
+    return [];
+  }
+}
+
+// Save suggestions
+async function saveSuggestions(suggestions) {
+  try {
+    await fs.writeFile(SUGGESTIONS_FILE, JSON.stringify(suggestions, null, 2));
+    console.log(`Saved ${suggestions.length} suggestions to suggestions.json`);
+  } catch (err) {
+    console.error("Error saving suggestions:", err);
+  }
+}
+
 initFiles();
 
 // Enable CORS for GitHub Pages origin
 app.use((req, res, next) => {
-  res.header("Access-Control-Allow-Origin", "https://app.solmemetics.com"); // Updated to match your domain
+  res.header("Access-Control-Allow-Origin", "https://app.solmemetics.com");
   res.header("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   res.header("Access-Control-Allow-Headers", "Content-Type");
   if (req.method === "OPTIONS") {
@@ -126,6 +155,36 @@ app.post("/set-username", express.json(), async (req, res) => {
   }
 });
 
+// Endpoint to view suggestions.json
+app.get("/suggestions", async (req, res) => {
+  try {
+    const suggestions = await loadSuggestions();
+    res.json(suggestions);
+  } catch (err) {
+    res.status(500).send("Error reading suggestions");
+  }
+});
+
+// Endpoint to submit suggestion
+app.post("/submit-suggestion", express.json(), async (req, res) => {
+  try {
+    const { wallet, suggestion, token, amount } = req.body;
+    if (!wallet || !suggestion || !token || amount === undefined) {
+      return res.status(400).send("Wallet, suggestion, token, and amount required");
+    }
+    const users = await loadUsers();
+    const username = users[wallet] || wallet.slice(0, 6);
+    const newSuggestion = { username, wallet, suggestion, token, amount, timestamp: new Date().toISOString() };
+    const suggestions = await loadSuggestions();
+    suggestions.push(newSuggestion);
+    await saveSuggestions(suggestions);
+    res.send("Suggestion submitted");
+  } catch (err) {
+    console.error("Error submitting suggestion:", err);
+    res.status(500).send("Error submitting suggestion");
+  }
+});
+
 wss.on("connection", async (ws, req) => {
   const clientIp = req.socket.remoteAddress;
   console.log(`New client connected from ${clientIp}`);
@@ -149,7 +208,7 @@ wss.on("connection", async (ws, req) => {
           rank: msg.rank,
           text: msg.text,
           timestamp: new Date().toISOString(),
-          originalWallet: msg.user, // Store original wallet for admin
+          originalWallet: msg.user,
         };
         console.log(`Received: ${msg.rank} ${username}: ${msg.text}`);
         const messages = await loadMessages();
