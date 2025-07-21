@@ -7,13 +7,12 @@
     "dev": "nodemon server.js"
   },
   "dependencies": {
-    "@solana/spl-token": "0.1.8",
-    "@solana/web3.js": "1.98.2",
-    "bs58": "^5.0.0",
-    "dotenv": "^16.0.0",
-    "express": "^4.17.1",
-    "ws": "^8.5.0"
-  },
+  "@solana/web3.js": "^1.95.3",
+  "@solana/spl-token": "^0.4.8",
+  "express": "^4.18.2",
+  "ws": "^8.14.2",
+  "dotenv": "^16.3.1"
+},
   "devDependencies": {
     "nodemon": "^3.1.4"
   },
