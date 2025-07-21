@@ -5,7 +5,7 @@ const fs = require("fs").promises;
 const path = require("path");
 const WebSocket = require("ws");
 const { Keypair, Connection, Transaction, SystemProgram, LAMPORTS_PER_SOL, PublicKey, TOKEN_PROGRAM_ID } = require("@solana/web3.js");
-const { createAssociatedTokenAccountInstruction, createTransferInstruction } = require("@solana/spl-token");
+const { createAssociatedTokenAccountInstruction, createTransferInstruction, getAssociatedTokenAddress } = require("@solana/spl-token");
 
 const app = express();
 const server = http.createServer(app);
@@ -19,18 +19,18 @@ const SUGGESTIONS_FILE = path.join(__dirname, "suggestions.json");
 // Solana connection
 const connection = new Connection("https://api.mainnet-beta.solana.com", "confirmed");
 
-// ATA function
+// Fallback ATA function
 const ASSOCIATED_TOKEN_PROGRAM_ID = new PublicKey("ATokenGVdDGrw5uGzXBNzMuGZvx7bGTp4GVRZBe8KMP");
-async function getAssociatedTokenAddress(mint, owner) {
+async function customGetAssociatedTokenAddress(mint, owner) {
   if (!mint || !owner) {
-    console.error("getAssociatedTokenAddress: Invalid input", {
+    console.error("customGetAssociatedTokenAddress: Invalid input", {
       mint: mint?.toBase58?.() || "undefined",
       owner: owner?.toBase58?.() || "undefined",
     });
     throw new Error("Mint or owner is undefined");
   }
   if (!(mint instanceof PublicKey) || !(owner instanceof PublicKey)) {
-    console.error("getAssociatedTokenAddress: Invalid PublicKey", {
+    console.error("customGetAssociatedTokenAddress: Invalid PublicKey", {
       mint: mint?.toBase58?.() || "not a PublicKey",
       owner: owner?.toBase58?.() || "not a PublicKey",
     });
@@ -46,21 +46,33 @@ async function getAssociatedTokenAddress(mint, owner) {
     const mintBytes = mint.toBytes();
     const ownerBytes = owner.toBytes();
     if (!mintBytes || mintBytes.length !== 32 || !ownerBytes || ownerBytes.length !== 32) {
-      console.error("PublicKey toBytes() failed", { mint: mintStr, owner: ownerStr, mintBytesLength: mintBytes?.length, ownerBytesLength: ownerBytes?.length });
+      console.error("PublicKey toBytes() failed", {
+        mint: mintStr,
+        owner: ownerStr,
+        mintBytesLength: mintBytes?.length,
+        ownerBytesLength: ownerBytes?.length,
+      });
       throw new Error("Invalid PublicKey: toBytes() returned invalid data");
     }
     console.log("Validating PublicKey buffers:", { mint: mintBytes.length, owner: ownerBytes.length });
     console.log("Attempting toBuffer for mint:", mintStr);
     const mintBuffer = mint.toBuffer();
+    console.log("mint.toBuffer() succeeded, length:", mintBuffer?.length);
     console.log("Attempting toBuffer for owner:", ownerStr);
     const ownerBuffer = owner.toBuffer();
-    console.log("Attempting toBuffer for TOKEN_PROGRAM_ID");
+    console.log("owner.toBuffer() succeeded, length:", ownerBuffer?.length);
+    console.log("Attempting toBuffer for TOKEN_PROGRAM_ID:", TOKEN_PROGRAM_ID.toBase58());
     const tokenProgramBuffer = TOKEN_PROGRAM_ID.toBuffer();
-    if (!mintBuffer || !ownerBuffer || !tokenProgramBuffer) {
+    console.log("TOKEN_PROGRAM_ID.toBuffer() succeeded, length:", tokenProgramBuffer?.length);
+    console.log("Attempting toBuffer for ASSOCIATED_TOKEN_PROGRAM_ID:", ASSOCIATED_TOKEN_PROGRAM_ID.toBase58());
+    const associatedProgramBuffer = ASSOCIATED_TOKEN_PROGRAM_ID.toBuffer();
+    console.log("ASSOCIATED_TOKEN_PROGRAM_ID.toBuffer() succeeded, length:", associatedProgramBuffer?.length);
+    if (!mintBuffer || !ownerBuffer || !tokenProgramBuffer || !associatedProgramBuffer) {
       console.error("toBuffer() returned null", {
         mintBuffer: !!mintBuffer,
         ownerBuffer: !!ownerBuffer,
         tokenProgramBuffer: !!tokenProgramBuffer,
+        associatedProgramBuffer: !!associatedProgramBuffer,
       });
       throw new Error("toBuffer() failed for one or more PublicKeys");
     }
@@ -73,12 +85,15 @@ async function getAssociatedTokenAddress(mint, owner) {
     return ata;
   } catch (err) {
     console.error("Error in findProgramAddress:", err.message, {
-      mint: mint?.toBase58?.() || "undefined",
-      owner: owner?.toBase58?.() || "undefined",
+      mint: typeof mint === "object" && mint.toBase58 ? mint.toBase58() : "undefined",
+      owner: typeof owner === "object" && owner.toBase58 ? owner.toBase58() : "undefined",
     });
     throw new Error(`Failed to compute ATA: ${err.message}`);
   }
 }
+
+// Use built-in getAssociatedTokenAddress if available, else fallback
+const getATA = typeof getAssociatedTokenAddress === "function" ? getAssociatedTokenAddress : customGetAssociatedTokenAddress;
 
 // Load and validate the donation wallet private key
 const DONATION_WALLET_PRIVATE_KEY = process.env.DONATION_WALLET_PRIVATE_KEY;
@@ -281,22 +296,31 @@ app.get("/suggestions", async (req, res) => {
 // Debug endpoint for ATA
 app.post("/test-ata", async (req, res) => {
   try {
-    const { mint, owner } = req.body;
-    console.log("Received /test-ata request:", { mint, owner });
+    const { mint, owner, testDonationWallet } = req.body;
+    console.log("Received /test-ata request:", { mint, owner, testDonationWallet });
     if (!mint || !owner) {
       return res.status(400).json({ error: "Mint and owner required" });
     }
-    let mintPubkey, ownerPubkey;
+    let mintPubkey, ownerPubkey, donationPubkey;
     try {
       mintPubkey = new PublicKey(mint);
       ownerPubkey = new PublicKey(owner);
+      if (testDonationWallet) {
+        donationPubkey = new PublicKey(donationWallet.publicKey);
+      }
     } catch (err) {
-      console.error("Invalid PublicKey in /test-ata:", err.message, { mint, owner });
-      return res.status(400).json({ error: "Invalid mint or owner address" });
+      console.error("Invalid PublicKey in /test-ata:", err.message, { mint, owner, testDonationWallet });
+      return res.status(400).json({ error: "Invalid mint, owner, or donation wallet address" });
     }
     try {
-      const ata = await getAssociatedTokenAddress(mintPubkey, ownerPubkey);
-      res.json({ success: true, ata: ata.toBase58() });
+      const result = {};
+      console.log("Testing user ATA for:", { mint: mintPubkey.toBase58(), owner: ownerPubkey.toBase58() });
+      result.userATA = (await getATA(mintPubkey, ownerPubkey)).toBase58();
+      if (testDonationWallet) {
+        console.log("Testing donation wallet ATA for:", { mint: mintPubkey.toBase58(), owner: donationPubkey.toBase58() });
+        result.donationATA = (await getATA(mintPubkey, donationPubkey)).toBase58();
+      }
+      res.json({ success: true, ...result });
     } catch (err) {
       console.error("Error computing ATA in /test-ata:", err.message);
       res.status(500).json({ error: `Failed to compute ATA: ${err.message}` });
@@ -385,9 +409,9 @@ app.post("/submit-suggestion", async (req, res) => {
       let userATA, donationATA;
       try {
         console.log("Fetching user ATA for:", { mint: tokenMint.toBase58(), owner: userPublicKey.toBase58() });
-        userATA = await getAssociatedTokenAddress(tokenMint, userPublicKey);
+        userATA = await getATA(tokenMint, userPublicKey);
         console.log("Fetching donation ATA for:", { mint: tokenMint.toBase58(), owner: donationWallet.publicKey.toBase58() });
-        donationATA = await getAssociatedTokenAddress(tokenMint, donationWallet.publicKey);
+        donationATA = await getATA(tokenMint, donationWallet.publicKey);
         console.log("User ATA:", userATA.toBase58(), "Donation ATA:", donationATA.toBase58());
       } catch (err) {
         console.error("Error getting ATA:", err.message);
