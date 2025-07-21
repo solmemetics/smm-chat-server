@@ -20,7 +20,7 @@ const SUGGESTIONS_FILE = path.join(__dirname, "suggestions.json");
 const connection = new Connection("https://api.mainnet-beta.solana.com", "confirmed");
 
 // ATA function
-const ASSOCIATED_TOKEN_PROGRAM_ID = new PublicKey("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL");
+const ASSOCIATED_TOKEN_PROGRAM_ID = new PublicKey("ATokenGVdDGrw5uGzXBNzMuGZvx7bGTp4GVRZBe8KMP");
 async function getAssociatedTokenAddress(mint, owner) {
   if (!mint || !owner) {
     console.error("getAssociatedTokenAddress: Invalid input", { mint: mint?.toBase58?.() || "undefined", owner: owner?.toBase58?.() || "undefined" });
@@ -31,7 +31,13 @@ async function getAssociatedTokenAddress(mint, owner) {
     throw new Error("Mint or owner is not a valid PublicKey");
   }
   try {
-    console.log("Computing ATA for mint:", mint.toBase58(), "owner:", owner.toBase58());
+    const mintStr = mint.toBase58();
+    const ownerStr = owner.toBase58();
+    if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(mintStr) || !/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(ownerStr)) {
+      console.error("Invalid PublicKey format", { mint: mintStr, owner: ownerStr });
+      throw new Error("Invalid PublicKey format");
+    }
+    console.log("Computing ATA for mint:", mintStr, "owner:", ownerStr);
     return (
       await PublicKey.findProgramAddress(
         [
@@ -174,7 +180,6 @@ async function saveSuggestions(suggestions) {
   }
 }
 
-// Initialize files
 initFiles();
 
 // Enable CORS
@@ -223,7 +228,6 @@ app.post("/set-username", async (req, res) => {
       return res.status(400).json({ error: "Wallet and username required" });
     }
     const users = await loadUsers();
-    // Check if username is already set and requester is not admin
     if (users[wallet] && wallet !== ADMIN_WALLET.toBase58()) {
       return res.status(403).json({ error: "Username already set. Only admin can change it." });
     }
@@ -263,6 +267,9 @@ app.post("/submit-suggestion", async (req, res) => {
     // Validate wallet address
     let userPublicKey;
     try {
+      if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(wallet)) {
+        throw new Error("Invalid wallet address format");
+      }
       userPublicKey = new PublicKey(wallet);
       console.log("Validated userPublicKey:", userPublicKey.toBase58());
     } catch (err) {
@@ -273,6 +280,9 @@ app.post("/submit-suggestion", async (req, res) => {
     // Validate token mint
     let tokenMint;
     try {
+      if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(token)) {
+        throw new Error("Invalid token mint address format");
+      }
       tokenMint = new PublicKey(token);
       console.log("Validated tokenMint:", tokenMint.toBase58());
     } catch (err) {
@@ -327,7 +337,10 @@ app.post("/submit-suggestion", async (req, res) => {
       let decimals;
       try {
         const mintInfo = await connection.getParsedAccountInfo(tokenMint);
-        decimals = mintInfo.value?.data?.parsed?.info?.decimals || 6; // Default to 6 if unavailable
+        if (!mintInfo.value?.data?.parsed?.info?.decimals) {
+          throw new Error("Unable to fetch token decimals");
+        }
+        decimals = mintInfo.value.data.parsed.info.decimals;
         console.log("Token decimals:", decimals);
       } catch (err) {
         console.error("Error getting token decimals:", err.message);
