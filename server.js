@@ -21,7 +21,7 @@ const connection = new Connection("https://api.mainnet-beta.solana.com", "confir
 
 // Load and validate the donation wallet private key
 const DONATION_WALLET_PRIVATE_KEY = process.env.DONATION_WALLET_PRIVATE_KEY;
-console.log("Raw DONATION_WALLET_PRIVATE_KEY:", DONATION_WALLET_PRIVATE_KEY); // Debug
+console.log("Raw DONATION_WALLET_PRIVATE_KEY:", DONATION_WALLET_PRIVATE_KEY);
 if (!DONATION_WALLET_PRIVATE_KEY) {
   console.error("Environment Error: DONATION_WALLET_PRIVATE_KEY not set in .env");
   process.exit(1);
@@ -41,7 +41,7 @@ if (donationWalletPrivateKey.length !== 64) {
 let donationWallet;
 try {
   donationWallet = Keypair.fromSecretKey(donationWalletPrivateKey);
-  console.log("Donation Wallet Public Key:", donationWallet.publicKey.toBase58()); // Should match Hs7LzaMG6vrhfnHmJXhPx98uyYyEscdXT93dLKKxWQYF
+  console.log("Donation Wallet Public Key:", donationWallet.publicKey.toBase58());
   if (donationWallet.publicKey.toBase58() !== "Hs7LzaMG6vrhfnHmJXhPx98uyYyEscdXT93dLKKxWQYF") {
     console.error("Validation Error: Derived public key does not match expected Hs7LzaMG6vrhfnHmJXhPx98uyYyEscdXT93dLKKxWQYF");
     process.exit(1);
@@ -52,7 +52,7 @@ try {
   process.exit(1);
 }
 
-// Admin wallet (creator wallet)
+// Admin wallet
 const ADMIN_WALLET = new PublicKey("Hs7LzaMG6vrhfnHmJXhPx98uyYyEscdXT93dLKKxWQYF");
 
 // Initialize files
@@ -147,7 +147,7 @@ async function saveSuggestions(suggestions) {
 
 initFiles();
 
-// Enable CORS for GitHub Pages and local testing
+// Enable CORS
 app.use((req, res, next) => {
   const allowedOrigins = ["https://app.solmemetics.com", "http://localhost:3000"];
   const origin = req.headers.origin;
@@ -192,8 +192,12 @@ app.post("/set-username", async (req, res) => {
       console.log("Missing wallet or username in request");
       return res.status(400).json({ error: "Wallet and username required" });
     }
-    console.log(`Received request to set username ${username} for wallet ${wallet}`);
     const users = await loadUsers();
+    // Check if username is already set and requester is not admin
+    if (users[wallet] && wallet !== ADMIN_WALLET.toBase58()) {
+      return res.status(403).json({ error: "Username already set. Only admin can change it." });
+    }
+    console.log(`Received request to set username ${username} for wallet ${wallet}`);
     users[wallet] = username;
     await saveUsers(users);
     console.log(`Username ${username} set for wallet ${wallet}`);
@@ -218,14 +222,34 @@ app.get("/suggestions", async (req, res) => {
 app.post("/submit-suggestion", async (req, res) => {
   try {
     const { wallet, suggestion, token, amount } = req.body;
+    console.log("Received /submit-suggestion request:", { wallet, suggestion, token, amount });
+
+    // Validate inputs
     if (!wallet || !suggestion || !token || amount === undefined || amount <= 0) {
+      console.log("Validation failed: Missing or invalid parameters");
       return res.status(400).json({ error: "Wallet, suggestion, token, and valid amount required" });
     }
+
+    // Validate wallet address
+    let userPublicKey;
+    try {
+      userPublicKey = new PublicKey(wallet);
+    } catch (err) {
+      console.error("Invalid wallet address:", err.message);
+      return res.status(400).json({ error: "Invalid wallet address" });
+    }
+
+    // Validate token mint
+    let tokenMint;
+    try {
+      tokenMint = new PublicKey(token);
+    } catch (err) {
+      console.error("Invalid token mint:", err.message);
+      return res.status(400).json({ error: "Invalid token mint address" });
+    }
+
     const users = await loadUsers();
     const username = users[wallet] || wallet.slice(0, 6);
-    const connection = new Connection("https://api.mainnet-beta.solana.com", "confirmed");
-    const userPublicKey = new PublicKey(wallet);
-    const tokenMint = new PublicKey(token);
 
     let transaction = new Transaction();
     if (token === "So11111111111111111111111111111111111111112") { // SOL
@@ -237,8 +261,15 @@ app.post("/submit-suggestion", async (req, res) => {
         })
       );
     } else { // Token
-      const userATA = await getAssociatedTokenAddress(tokenMint, userPublicKey);
-      const donationATA = await getAssociatedTokenAddress(tokenMint, donationWallet.publicKey);
+      let userATA, donationATA;
+      try {
+        userATA = await getAssociatedTokenAddress(tokenMint, userPublicKey);
+        donationATA = await getAssociatedTokenAddress(tokenMint, donationWallet.publicKey);
+      } catch (err) {
+        console.error("Error getting ATA:", err.message);
+        return res.status(500).json({ error: "Failed to get associated token address" });
+      }
+
       // Check if donation ATA exists
       const donationATAInfo = await connection.getAccountInfo(donationATA);
       if (!donationATAInfo) {
@@ -251,32 +282,52 @@ app.post("/submit-suggestion", async (req, res) => {
           )
         );
       }
-      transaction.add(
-        createTransferInstruction(
-          userATA,
-          donationATA,
-          userPublicKey,
-          Math.floor(amount * 10 ** 6), // Assuming 6 decimals for SMM/USDC
-          [],
-          TOKEN_PROGRAM_ID
-        )
-      );
+
+      // Get token decimals
+      let decimals;
+      try {
+        const mintInfo = await connection.getParsedAccountInfo(tokenMint);
+        decimals = mintInfo.value?.data?.parsed?.info?.decimals || 6; // Default to 6 if unavailable
+      } catch (err) {
+        console.error("Error getting token decimals:", err.message);
+        return res.status(500).json({ error: "Failed to get token decimals" });
+      }
+
+      try {
+        transaction.add(
+          createTransferInstruction(
+            userATA,
+            donationATA,
+            userPublicKey,
+            Math.floor(amount * 10 ** decimals),
+            [],
+            TOKEN_PROGRAM_ID
+          )
+        );
+      } catch (err) {
+        console.error("Error creating transfer instruction:", err.message);
+        return res.status(500).json({ error: "Failed to create token transfer instruction" });
+      }
     }
 
-    transaction.recentBlockhash = (await connection.getLatestBlockhash()).blockhash;
-    transaction.feePayer = userPublicKey;
+    try {
+      transaction.recentBlockhash = (await connection.getLatestBlockhash()).blockhash;
+      transaction.feePayer = userPublicKey;
+      const serializedTx = transaction.serialize({ requireAllSignatures: false }).toString("base64");
+      
+      const newSuggestion = { username, wallet, suggestion, token, amount, timestamp: new Date().toISOString() };
+      const suggestions = await loadSuggestions();
+      suggestions.push(newSuggestion);
+      await saveSuggestions(suggestions);
 
-    const serializedTx = transaction.serialize({ requireAllSignatures: false }).toString("base64");
-
-    const newSuggestion = { username, wallet, suggestion, token, amount, timestamp: new Date().toISOString() };
-    const suggestions = await loadSuggestions();
-    suggestions.push(newSuggestion);
-    await saveSuggestions(suggestions);
-
-    res.json({ message: "Suggestion submitted, please sign transaction", transaction: serializedTx });
+      res.json({ message: "Suggestion submitted, please sign transaction", transaction: serializedTx });
+    } catch (err) {
+      console.error("Error serializing transaction or saving suggestion:", err.message);
+      return res.status(500).json({ error: "Failed to process transaction or save suggestion" });
+    }
   } catch (err) {
-    console.error("Error submitting suggestion:", err);
-    res.status(500).json({ error: "Error submitting suggestion" });
+    console.error("Unexpected error in /submit-suggestion:", err);
+    res.status(500).json({ error: `Unexpected error: ${err.message}` });
   }
 });
 
