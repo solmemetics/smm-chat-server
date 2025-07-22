@@ -4,9 +4,9 @@ const http = require("http");
 const fs = require("fs").promises;
 const path = require("path");
 const WebSocket = require("ws");
-const { Keypair, Connection, Transaction, SystemProgram, LAMPORTS_PER_SOL, PublicKey, TransactionInstruction } = require("@solana/web3.js");
+const { Keypair, Connection, Transaction, SystemProgram, LAMPORTS_PER_SOL, PublicKey, TransactionInstruction, clusterApiUrl } = require("@solana/web3.js");
 const { createAssociatedTokenAccountInstruction, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID } = require("@solana/spl-token");
-const { createTransferInstruction } = require("@solana/spl-token"); // Ensure this is explicitly imported
+const { createTransferInstruction } = require("@solana/spl-token");
 
 const app = express();
 const server = http.createServer(app);
@@ -17,13 +17,34 @@ const MESSAGES_FILE = path.join(__dirname, "messages.json");
 const USERS_FILE = path.join(__dirname, "user.json");
 const SUGGESTIONS_FILE = path.join(__dirname, "suggestions.json");
 
-// Log program IDs and functions for debugging
+// Log program IDs and package versions for debugging
+console.log("spl-token version:", require("@solana/spl-token/package.json").version);
 console.log("TOKEN_PROGRAM_ID:", TOKEN_PROGRAM_ID?.toBase58?.());
 console.log("ASSOCIATED_TOKEN_PROGRAM_ID:", ASSOCIATED_TOKEN_PROGRAM_ID?.toBase58?.());
 console.log("createTransferInstruction:", typeof createTransferInstruction);
 
-// Solana connection
-const connection = new Connection("https://api.mainnet-beta.solana.com", "confirmed");
+// Solana connection with fallback RPCs
+const RPC_ENDPOINTS = [
+  "https://silent-fluent-diamond.solana-mainnet.quiknode.pro/bdf6a6133f8736f5bf9097f4628841fe18b60bcc",
+  clusterApiUrl("mainnet-beta"),
+  "https://api.mainnet-beta.solana.com"
+];
+
+async function getConnection(attempt = 0) {
+  const rpc = RPC_ENDPOINTS[attempt];
+  try {
+    const connection = new Connection(rpc, { commitment: "confirmed", disableRetryOnRateLimit: false });
+    await connection.getSlot();
+    console.log(`Connected to RPC: ${rpc}`);
+    return connection;
+  } catch (err) {
+    console.error(`RPC ${rpc} failed:`, err);
+    if (attempt < RPC_ENDPOINTS.length - 1) {
+      return getConnection(attempt + 1);
+    }
+    throw new Error("All RPC endpoints failed.");
+  }
+}
 
 // Custom ATA function
 async function getAssociatedTokenAddress(mintInput, ownerInput) {
@@ -211,9 +232,12 @@ async function saveSuggestions(suggestions) {
 
 initFiles();
 
+// Serve static files
+app.use(express.static(path.join(__dirname, 'public')));
+
 // Enable CORS
 app.use((req, res, next) => {
-  const allowedOrigins = ["https://app.solmemetics.com", "http://localhost:3000"];
+  const allowedOrigins = ["https://app.solmemetics.com", "http://localhost:3000", "https://solmemetics.github.io"];
   const origin = req.headers.origin;
   if (allowedOrigins.includes(origin)) {
     res.header("Access-Control-Allow-Origin", origin);
@@ -228,7 +252,7 @@ app.use((req, res, next) => {
 
 app.use(express.json());
 
-// Endpoint to view messages.json
+// Endpoint to view messages
 app.get("/messages", async (req, res) => {
   try {
     const messages = await loadMessages();
@@ -238,7 +262,7 @@ app.get("/messages", async (req, res) => {
   }
 });
 
-// Endpoint to view user.json
+// Endpoint to view users
 app.get("/users", async (req, res) => {
   try {
     const users = await loadUsers();
@@ -271,7 +295,7 @@ app.post("/set-username", async (req, res) => {
   }
 });
 
-// Endpoint to view suggestions.json
+// Endpoint to view suggestions
 app.get("/suggestions", async (req, res) => {
   try {
     const suggestions = await loadSuggestions();
@@ -281,41 +305,43 @@ app.get("/suggestions", async (req, res) => {
   }
 });
 
-// Debug endpoint for ATA
-app.post("/test-ata", async (req, res) => {
+// New endpoint for free suggestions
+app.post("/submit-free-suggestion", async (req, res) => {
   try {
-    const { mint, owner, testDonationWallet } = req.body;
-    console.log("Received /test-ata request:", { mint, owner, testDonationWallet });
-    if (!mint || !owner) {
-      return res.status(400).json({ error: "Mint and owner required" });
+    const { wallet, suggestion } = req.body;
+    console.log("Received /submit-free-suggestion request:", { wallet, suggestion });
+
+    // Validate inputs
+    if (!wallet || !suggestion) {
+      console.log("Validation failed: Missing wallet or suggestion");
+      return res.status(400).json({ error: "Wallet and suggestion required" });
     }
-    let mintPubkey, ownerPubkey, donationPubkey;
+
+    // Validate wallet address
+    let userPublicKey;
     try {
-      mintPubkey = new PublicKey(mint);
-      ownerPubkey = new PublicKey(owner);
-      if (testDonationWallet) {
-        donationPubkey = new PublicKey(donationWallet.publicKey);
+      if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(wallet)) {
+        throw new Error("Invalid wallet address format");
       }
+      userPublicKey = new PublicKey(wallet);
+      console.log("Validated userPublicKey:", userPublicKey.toBase58());
     } catch (err) {
-      console.error("Invalid PublicKey in /test-ata:", err.message, { mint, owner, testDonationWallet });
-      return res.status(400).json({ error: "Invalid mint, owner, or donation wallet address" });
+      console.error("Invalid wallet address:", err.message, { wallet });
+      return res.status(400).json({ error: "Invalid wallet address" });
     }
-    try {
-      const result = {};
-      console.log("Testing user ATA for:", { mint: mintPubkey.toBase58(), owner: ownerPubkey.toBase58() });
-      result.userATA = (await getATA(mintPubkey, ownerPubkey)).toBase58();
-      if (testDonationWallet) {
-        console.log("Testing donation wallet ATA for:", { mint: mintPubkey.toBase58(), owner: donationPubkey.toBase58() });
-        result.donationATA = (await getATA(mintPubkey, donationPubkey)).toBase58();
-      }
-      res.json({ success: true, ...result });
-    } catch (err) {
-      console.error("Error computing ATA in /test-ata:", err.message);
-      res.status(500).json({ error: `Failed to compute ATA: ${err.message}` });
-    }
+
+    const users = await loadUsers();
+    const username = users[wallet] || wallet.slice(0, 6);
+    const newSuggestion = { username, wallet, suggestion, timestamp: new Date().toISOString() };
+    const suggestions = await loadSuggestions();
+    suggestions.push(newSuggestion);
+    await saveSuggestions(suggestions);
+
+    console.log("Suggestion saved:", newSuggestion);
+    res.json({ message: "Suggestion saved", suggestion: newSuggestion });
   } catch (err) {
-    console.error("Unexpected error in /test-ata:", err);
-    res.status(500).json({ error: `Unexpected error: ${err.message}` });
+    console.error("Error in /submit-free-suggestion:", err);
+    res.status(500).json({ error: "Failed to save suggestion" });
   }
 });
 
@@ -338,10 +364,6 @@ app.post("/submit-suggestion", async (req, res) => {
         throw new Error("Invalid wallet address format");
       }
       userPublicKey = new PublicKey(wallet);
-      const userBytes = userPublicKey.toBytes();
-      if (!userBytes || userBytes.length !== 32) {
-        throw new Error("Invalid wallet PublicKey: toBytes() failed");
-      }
       console.log("Validated userPublicKey:", userPublicKey.toBase58());
     } catch (err) {
       console.error("Invalid wallet address:", err.message, { wallet });
@@ -355,10 +377,6 @@ app.post("/submit-suggestion", async (req, res) => {
         throw new Error("Invalid token mint address format");
       }
       tokenMint = new PublicKey(token);
-      const mintBytes = tokenMint.toBytes();
-      if (!mintBytes || mintBytes.length !== 32) {
-        throw new Error("Invalid token mint PublicKey: toBytes() failed");
-      }
       console.log("Validated tokenMint:", tokenMint.toBase58());
     } catch (err) {
       console.error("Invalid token mint:", err.message, { token });
@@ -370,20 +388,12 @@ app.post("/submit-suggestion", async (req, res) => {
       console.error("Donation wallet not initialized");
       return res.status(500).json({ error: "Server configuration error: Donation wallet not initialized" });
     }
-    try {
-      const donationBytes = donationWallet.publicKey.toBytes();
-      if (!donationBytes || donationBytes.length !== 32) {
-        throw new Error("Invalid donation wallet PublicKey: toBytes() failed");
-      }
-      console.log("Donation wallet public key:", donationWallet.publicKey.toBase58());
-    } catch (err) {
-      console.error("Donation wallet validation failed:", err.message);
-      return res.status(500).json({ error: "Server configuration error: Invalid donation wallet" });
-    }
+    console.log("Donation wallet public key:", donationWallet.publicKey.toBase58());
 
     const users = await loadUsers();
     const username = users[wallet] || wallet.slice(0, 6);
 
+    const connection = await getConnection();
     let transaction = new Transaction();
     if (token === "So11111111111111111111111111111111111111112") { // SOL
       transaction.add(
@@ -474,6 +484,7 @@ app.post("/confirm-suggestion", async (req, res) => {
 
     // Verify transaction signature
     try {
+      const connection = await getConnection();
       const result = await connection.getSignatureStatus(signature);
       if (!result.value || result.value.confirmationStatus !== "confirmed") {
         console.error("Transaction not confirmed:", signature);
@@ -506,7 +517,7 @@ wss.on("connection", async (ws, req) => {
   const messages = await loadMessages();
   messages.forEach((msg) => {
     if (ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify(msg));
+      ws.send(JSON.stringify({ type: "chat", ...msg }));
     }
   });
 
@@ -529,7 +540,7 @@ wss.on("connection", async (ws, req) => {
         await saveMessages(messages);
         wss.clients.forEach((client) => {
           if (client.readyState === WebSocket.OPEN) {
-            client.send(JSON.stringify(chatMessage));
+            client.send(JSON.stringify({ type: "chat", ...chatMessage }));
           }
         });
       } else if (msg.type === "delete" && msg.index !== undefined) {
