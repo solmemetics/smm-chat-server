@@ -17,8 +17,7 @@ const MESSAGES_FILE = path.join(__dirname, "messages.json");
 const USERS_FILE = path.join(__dirname, "user.json");
 const SUGGESTIONS_FILE = path.join(__dirname, "suggestions.json");
 
-// Log program IDs and package versions for debugging
-console.log("spl-token version:", require("@solana/spl-token/package.json").version);
+// Log program IDs and transfer function for debugging
 console.log("TOKEN_PROGRAM_ID:", TOKEN_PROGRAM_ID?.toBase58?.());
 console.log("ASSOCIATED_TOKEN_PROGRAM_ID:", ASSOCIATED_TOKEN_PROGRAM_ID?.toBase58?.());
 console.log("createTransferInstruction:", typeof createTransferInstruction);
