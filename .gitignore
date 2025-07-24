@@ -1,3 +1,6 @@
 node_modules
-messages.json".env" 
-".env" 
+messages.json
+.env
+.env.local
+.env.*.local
+*.env
