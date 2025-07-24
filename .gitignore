@@ -4,3 +4,4 @@ messages.json
 .env.local
 .env.*.local
 *.env
+
