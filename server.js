@@ -1,12 +1,9 @@
-require("dotenv").config();
 const express = require("express");
 const http = require("http");
 const fs = require("fs").promises;
 const path = require("path");
 const WebSocket = require("ws");
-const { Keypair, Connection, Transaction, SystemProgram, LAMPORTS_PER_SOL, PublicKey, TransactionInstruction, clusterApiUrl } = require("@solana/web3.js");
-const { createAssociatedTokenAccountInstruction, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID } = require("@solana/spl-token");
-const { createTransferInstruction } = require("@solana/spl-token");
+const { Connection, PublicKey, clusterApiUrl } = require("@solana/web3.js");
 
 const app = express();
 const server = http.createServer(app);
@@ -16,13 +13,10 @@ const port = process.env.PORT || 3000;
 const MESSAGES_FILE = path.join(__dirname, "messages.json");
 const USERS_FILE = path.join(__dirname, "user.json");
 const SUGGESTIONS_FILE = path.join(__dirname, "suggestions.json");
+const DELETED_SUGGESTIONS_FILE = path.join(__dirname, "deleted_suggestions.json");
 
-// Log program IDs and transfer function for debugging
-console.log("TOKEN_PROGRAM_ID:", TOKEN_PROGRAM_ID?.toBase58?.());
-console.log("ASSOCIATED_TOKEN_PROGRAM_ID:", ASSOCIATED_TOKEN_PROGRAM_ID?.toBase58?.());
-console.log("createTransferInstruction:", typeof createTransferInstruction);
+const ADMIN_WALLET = new PublicKey("Cj64jfCQ2dR5Utf62nMnmEq8fjerAk4u1mZY1Hv53QZA");
 
-// Solana connection with fallback RPCs
 const RPC_ENDPOINTS = [
   "https://silent-fluent-diamond.solana-mainnet.quiknode.pro/bdf6a6133f8736f5bf9097f4628841fe18b60bcc",
   clusterApiUrl("mainnet-beta"),
@@ -32,7 +26,7 @@ const RPC_ENDPOINTS = [
 async function getConnection(attempt = 0) {
   const rpc = RPC_ENDPOINTS[attempt];
   try {
-    const connection = new Connection(rpc, { commitment: "confirmed", disableRetryOnRateLimit: false });
+    const connection = new Connection(rpc, { commitment: "confirmed" });
     await connection.getSlot();
     console.log(`Connected to RPC: ${rpc}`);
     return connection;
@@ -45,101 +39,6 @@ async function getConnection(attempt = 0) {
   }
 }
 
-// Custom ATA function
-async function getAssociatedTokenAddress(mintInput, ownerInput) {
-  try {
-    const mint = mintInput instanceof PublicKey ? mintInput : new PublicKey(mintInput);
-    const owner = ownerInput instanceof PublicKey ? ownerInput : new PublicKey(ownerInput);
-
-    if (!TOKEN_PROGRAM_ID || !ASSOCIATED_TOKEN_PROGRAM_ID) {
-      throw new Error("Missing TOKEN_PROGRAM_ID or ASSOCIATED_TOKEN_PROGRAM_ID");
-    }
-
-    console.log("mint.toBase58():", mint.toBase58());
-    console.log("owner.toBase58():", owner.toBase58());
-    console.log("TOKEN_PROGRAM_ID.toBase58():", TOKEN_PROGRAM_ID.toBase58());
-    console.log("ASSOCIATED_TOKEN_PROGRAM_ID.toBase58():", ASSOCIATED_TOKEN_PROGRAM_ID.toBase58());
-
-    const [ata] = await PublicKey.findProgramAddress(
-      [
-        owner.toBuffer(),
-        TOKEN_PROGRAM_ID.toBuffer(),
-        mint.toBuffer(),
-      ],
-      ASSOCIATED_TOKEN_PROGRAM_ID
-    );
-
-    console.log("Computed ATA:", ata.toBase58());
-    return ata;
-  } catch (e) {
-    console.error("❌ Error in findProgramAddress:", e.message, { mint: mintInput, owner: ownerInput });
-    throw new Error("Failed to compute ATA: " + e.message);
-  }
-}
-
-// Use custom getAssociatedTokenAddress
-const getATA = getAssociatedTokenAddress;
-
-// Fallback for createTransferInstruction
-function createTransferInstructionFallback(source, destination, owner, amount, multiSigners = [], programId = TOKEN_PROGRAM_ID) {
-  console.log("Using fallback createTransferInstruction");
-  const keys = [
-    { pubkey: source, isSigner: false, isWritable: true },
-    { pubkey: destination, isSigner: false, isWritable: true },
-    { pubkey: owner, isSigner: true, isWritable: false },
-  ];
-
-  const data = Buffer.alloc(8 + 1);
-  data.writeUInt8(3, 0); // Instruction index for Transfer
-  data.writeBigUInt64LE(BigInt(amount), 1); // Amount
-
-  return new TransactionInstruction({
-    keys,
-    programId,
-    data,
-  });
-}
-
-// Use createTransferInstruction if available, else fallback
-const createTransfer = typeof createTransferInstruction === "function" ? createTransferInstruction : createTransferInstructionFallback;
-
-// Load and validate the donation wallet private key
-const DONATION_WALLET_PRIVATE_KEY = process.env.DONATION_WALLET_PRIVATE_KEY;
-console.log("Raw DONATION_WALLET_PRIVATE_KEY:", DONATION_WALLET_PRIVATE_KEY);
-if (!DONATION_WALLET_PRIVATE_KEY) {
-  console.error("Environment Error: DONATION_WALLET_PRIVATE_KEY not set in .env");
-  process.exit(1);
-}
-let donationWalletPrivateKey;
-try {
-  donationWalletPrivateKey = Uint8Array.from(JSON.parse(DONATION_WALLET_PRIVATE_KEY));
-} catch (err) {
-  console.error("Parsing Error: Failed to parse DONATION_WALLET_PRIVATE_KEY:", err.message);
-  console.error("Ensure the .env file contains a valid JSON array with 64 numbers, e.g., [123,45,67,...,89]");
-  process.exit(1);
-}
-if (donationWalletPrivateKey.length !== 64) {
-  console.error(`Validation Error: Invalid private key size: expected 64 bytes, got ${donationWalletPrivateKey.length}`);
-  process.exit(1);
-}
-let donationWallet;
-try {
-  donationWallet = Keypair.fromSecretKey(donationWalletPrivateKey);
-  console.log("Donation Wallet Public Key:", donationWallet.publicKey.toBase58());
-  if (donationWallet.publicKey.toBase58() !== "Hs7LzaMG6vrhfnHmJXhPx98uyYyEscdXT93dLKKxWQYF") {
-    console.error("Validation Error: Derived public key does not match expected Hs7LzaMG6vrhfnHmJXhPx98uyYyEscdXT93dLKKxWQYF");
-    process.exit(1);
-  }
-} catch (err) {
-  console.error("Keypair Error: Failed to create Keypair from secret key:", err.message);
-  console.error("Ensure the private key corresponds to a valid Solana keypair for Hs7LzaMG6vrhfnHmJXhPx98uyYyEscdXT93dLKKxWQYF");
-  process.exit(1);
-}
-
-// Admin wallet
-const ADMIN_WALLET = new PublicKey("Hs7LzaMG6vrhfnHmJXhPx98uyYyEscdXT93dLKKxWQYF");
-
-// Initialize files
 async function initFiles() {
   try {
     await fs.access(MESSAGES_FILE);
@@ -162,32 +61,34 @@ async function initFiles() {
     console.log("Creating new suggestions file");
     await fs.writeFile(SUGGESTIONS_FILE, JSON.stringify([]));
   }
+  try {
+    await fs.access(DELETED_SUGGESTIONS_FILE);
+    console.log("Deleted suggestions file exists");
+  } catch {
+    console.log("Creating new deleted suggestions file");
+    await fs.writeFile(DELETED_SUGGESTIONS_FILE, JSON.stringify([]));
+  }
 }
 
-// Load messages
 async function loadMessages() {
   try {
     const data = await fs.readFile(MESSAGES_FILE, "utf8");
-    const messages = JSON.parse(data);
-    console.log(`Loaded ${messages.length} messages from messages.json`);
-    return messages;
+    return JSON.parse(data);
   } catch (err) {
     console.error("Error loading messages:", err);
     return [];
   }
 }
 
-// Save messages
 async function saveMessages(messages) {
   try {
     await fs.writeFile(MESSAGES_FILE, JSON.stringify(messages, null, 2));
-    console.log(`Saved ${messages.length} messages to messages.json`);
+    console.log(`Saved ${messages.length} messages`);
   } catch (err) {
     console.error("Error saving messages:", err);
   }
 }
 
-// Load users
 async function loadUsers() {
   try {
     const data = await fs.readFile(USERS_FILE, "utf8");
@@ -198,17 +99,15 @@ async function loadUsers() {
   }
 }
 
-// Save users
 async function saveUsers(users) {
   try {
     await fs.writeFile(USERS_FILE, JSON.stringify(users, null, 2));
-    console.log("Saved users to user.json");
+    console.log("Saved users");
   } catch (err) {
     console.error("Error saving users:", err);
   }
 }
 
-// Load suggestions
 async function loadSuggestions() {
   try {
     const data = await fs.readFile(SUGGESTIONS_FILE, "utf8");
@@ -219,22 +118,37 @@ async function loadSuggestions() {
   }
 }
 
-// Save suggestions
 async function saveSuggestions(suggestions) {
   try {
     await fs.writeFile(SUGGESTIONS_FILE, JSON.stringify(suggestions, null, 2));
-    console.log(`Saved ${suggestions.length} suggestions to suggestions.json`);
+    console.log(`Saved ${suggestions.length} suggestions`);
   } catch (err) {
     console.error("Error saving suggestions:", err);
   }
 }
 
+async function loadDeletedSuggestions() {
+  try {
+    const data = await fs.readFile(DELETED_SUGGESTIONS_FILE, "utf8");
+    return JSON.parse(data);
+  } catch (err) {
+    console.error("Error loading deleted suggestions:", err);
+    return [];
+  }
+}
+
+async function saveDeletedSuggestions(deletedSuggestions) {
+  try {
+    await fs.writeFile(DELETED_SUGGESTIONS_FILE, JSON.stringify(deletedSuggestions, null, 2));
+    console.log(`Saved ${deletedSuggestions.length} deleted suggestions`);
+  } catch (err) {
+    console.error("Error saving deleted suggestions:", err);
+  }
+}
+
 initFiles();
 
-// Serve static files
 app.use(express.static(path.join(__dirname, 'public')));
-
-// Enable CORS
 app.use((req, res, next) => {
   const allowedOrigins = ["https://app.solmemetics.com", "http://localhost:3000", "https://solmemetics.github.io"];
   const origin = req.headers.origin;
@@ -248,10 +162,8 @@ app.use((req, res, next) => {
   }
   next();
 });
-
 app.use(express.json());
 
-// Endpoint to view messages
 app.get("/messages", async (req, res) => {
   try {
     const messages = await loadMessages();
@@ -261,7 +173,6 @@ app.get("/messages", async (req, res) => {
   }
 });
 
-// Endpoint to view users
 app.get("/users", async (req, res) => {
   try {
     const users = await loadUsers();
@@ -271,22 +182,18 @@ app.get("/users", async (req, res) => {
   }
 });
 
-// Endpoint to set username
 app.post("/set-username", async (req, res) => {
   try {
     const { wallet, username } = req.body;
     if (!wallet || !username) {
-      console.log("Missing wallet or username in request");
       return res.status(400).json({ error: "Wallet and username required" });
     }
     const users = await loadUsers();
     if (users[wallet] && wallet !== ADMIN_WALLET.toBase58()) {
       return res.status(403).json({ error: "Username already set. Only admin can change it." });
     }
-    console.log(`Received request to set username ${username} for wallet ${wallet}`);
     users[wallet] = username;
     await saveUsers(users);
-    console.log(`Username ${username} set for wallet ${wallet}`);
     res.json({ message: "Username set" });
   } catch (err) {
     console.error("Error setting username:", err);
@@ -294,49 +201,43 @@ app.post("/set-username", async (req, res) => {
   }
 });
 
-// Endpoint to view suggestions
 app.get("/suggestions", async (req, res) => {
   try {
+    const wallet = req.query.wallet;
+    if (!wallet) {
+      return res.status(400).json({ error: "Wallet parameter required" });
+    }
     const suggestions = await loadSuggestions();
-    res.json(suggestions);
+    const deletedSuggestions = await loadDeletedSuggestions();
+    if (wallet === ADMIN_WALLET.toBase58()) {
+      return res.json([...suggestions, ...deletedSuggestions]);
+    }
+    const userSuggestions = suggestions.filter(sug => sug.wallet === wallet);
+    res.json(userSuggestions);
   } catch (err) {
+    console.error("Error reading suggestions:", err);
     res.status(500).json({ error: "Error reading suggestions" });
   }
 });
 
-// New endpoint for free suggestions
 app.post("/submit-free-suggestion", async (req, res) => {
   try {
     const { wallet, suggestion } = req.body;
-    console.log("Received /submit-free-suggestion request:", { wallet, suggestion });
-
-    // Validate inputs
     if (!wallet || !suggestion) {
-      console.log("Validation failed: Missing wallet or suggestion");
       return res.status(400).json({ error: "Wallet and suggestion required" });
     }
-
-    // Validate wallet address
     let userPublicKey;
     try {
-      if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(wallet)) {
-        throw new Error("Invalid wallet address format");
-      }
       userPublicKey = new PublicKey(wallet);
-      console.log("Validated userPublicKey:", userPublicKey.toBase58());
     } catch (err) {
-      console.error("Invalid wallet address:", err.message, { wallet });
       return res.status(400).json({ error: "Invalid wallet address" });
     }
-
     const users = await loadUsers();
     const username = users[wallet] || wallet.slice(0, 6);
     const newSuggestion = { username, wallet, suggestion, timestamp: new Date().toISOString() };
     const suggestions = await loadSuggestions();
     suggestions.push(newSuggestion);
     await saveSuggestions(suggestions);
-
-    console.log("Suggestion saved:", newSuggestion);
     res.json({ message: "Suggestion saved", suggestion: newSuggestion });
   } catch (err) {
     console.error("Error in /submit-free-suggestion:", err);
@@ -344,175 +245,34 @@ app.post("/submit-free-suggestion", async (req, res) => {
   }
 });
 
-// Endpoint to prepare suggestion transaction
-app.post("/submit-suggestion", async (req, res) => {
+app.post("/delete-suggestion", async (req, res) => {
   try {
-    const { wallet, suggestion, token, amount } = req.body;
-    console.log("Received /submit-suggestion request:", { wallet, suggestion, token, amount });
-
-    // Validate inputs
-    if (!wallet || !suggestion || !token || amount === undefined || amount <= 0) {
-      console.log("Validation failed: Missing or invalid parameters");
-      return res.status(400).json({ error: "Wallet, suggestion, token, and valid amount required" });
+    const { index, wallet } = req.body;
+    if (index === undefined || !wallet) {
+      return res.status(400).json({ error: "Index and wallet required" });
     }
-
-    // Validate wallet address
-    let userPublicKey;
-    try {
-      if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(wallet)) {
-        throw new Error("Invalid wallet address format");
-      }
-      userPublicKey = new PublicKey(wallet);
-      console.log("Validated userPublicKey:", userPublicKey.toBase58());
-    } catch (err) {
-      console.error("Invalid wallet address:", err.message, { wallet });
-      return res.status(400).json({ error: "Invalid wallet address" });
-    }
-
-    // Validate token mint
-    let tokenMint;
-    try {
-      if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(token)) {
-        throw new Error("Invalid token mint address format");
-      }
-      tokenMint = new PublicKey(token);
-      console.log("Validated tokenMint:", tokenMint.toBase58());
-    } catch (err) {
-      console.error("Invalid token mint:", err.message, { token });
-      return res.status(400).json({ error: "Invalid token mint address" });
-    }
-
-    // Validate donation wallet
-    if (!donationWallet || !donationWallet.publicKey) {
-      console.error("Donation wallet not initialized");
-      return res.status(500).json({ error: "Server configuration error: Donation wallet not initialized" });
-    }
-    console.log("Donation wallet public key:", donationWallet.publicKey.toBase58());
-
-    const users = await loadUsers();
-    const username = users[wallet] || wallet.slice(0, 6);
-
-    const connection = await getConnection();
-    let transaction = new Transaction();
-    if (token === "So11111111111111111111111111111111111111112") { // SOL
-      transaction.add(
-        SystemProgram.transfer({
-          fromPubkey: userPublicKey,
-          toPubkey: donationWallet.publicKey,
-          lamports: Math.floor(amount * LAMPORTS_PER_SOL),
-        })
-      );
-    } else { // Token
-      let userATA, donationATA;
-      try {
-        console.log("Fetching user ATA for:", { mint: tokenMint.toBase58(), owner: userPublicKey.toBase58() });
-        userATA = await getATA(tokenMint, userPublicKey);
-        console.log("Fetching donation ATA for:", { mint: tokenMint.toBase58(), owner: donationWallet.publicKey.toBase58() });
-        donationATA = await getATA(tokenMint, donationWallet.publicKey);
-        console.log("User ATA:", userATA.toBase58(), "Donation ATA:", donationATA.toBase58());
-      } catch (err) {
-        console.error("Error getting ATA:", err.message);
-        return res.status(500).json({ error: "Failed to get associated token address" });
-      }
-
-      // Check if donation ATA exists
-      const donationATAInfo = await connection.getAccountInfo(donationATA);
-      if (!donationATAInfo) {
-        transaction.add(
-          createAssociatedTokenAccountInstruction(
-            donationWallet.publicKey, // Payer
-            donationATA,
-            donationWallet.publicKey, // Owner
-            tokenMint
-          )
-        );
-      }
-
-      // Get token decimals and create transfer instruction
-      try {
-        const mintInfo = await connection.getParsedAccountInfo(tokenMint);
-        if (!mintInfo.value?.data?.parsed?.info?.decimals) {
-          throw new Error("Unable to fetch token decimals");
-        }
-        const decimals = mintInfo.value.data.parsed.info.decimals;
-        console.log("Token decimals:", decimals);
-
-        transaction.add(
-          createTransfer(
-            userATA,
-            donationATA,
-            userPublicKey,
-            Math.floor(amount * 10 ** decimals),
-            [],
-            TOKEN_PROGRAM_ID
-          )
-        );
-      } catch (err) {
-        console.error("Error creating transfer instruction or fetching decimals:", err.message);
-        return res.status(500).json({ error: "Failed to create token transfer instruction or fetch decimals" });
-      }
-    }
-
-    try {
-      transaction.recentBlockhash = (await connection.getLatestBlockhash()).blockhash;
-      transaction.feePayer = userPublicKey;
-      const serializedTx = transaction.serialize({ requireAllSignatures: false }).toString("base64");
-      console.log("Transaction serialized, sending to client");
-      res.json({ message: "Please sign transaction", transaction: serializedTx, suggestionData: { username, wallet, suggestion, token, amount } });
-    } catch (err) {
-      console.error("Error serializing transaction:", err.message);
-      return res.status(500).json({ error: "Failed to process transaction" });
-    }
-  } catch (err) {
-    console.error("Unexpected error in /submit-suggestion:", err);
-    res.status(500).json({ error: `Unexpected error: ${err.message}` });
-  }
-});
-
-// Endpoint to confirm suggestion after transaction
-app.post("/confirm-suggestion", async (req, res) => {
-  try {
-    const { wallet, suggestion, token, amount, signature } = req.body;
-    console.log("Received /confirm-suggestion request:", { wallet, suggestion, token, amount, signature });
-
-    // Validate inputs
-    if (!wallet || !suggestion || !token || amount === undefined || !signature) {
-      console.log("Validation failed: Missing parameters in /confirm-suggestion");
-      return res.status(400).json({ error: "Wallet, suggestion, token, amount, and signature required" });
-    }
-
-    // Verify transaction signature
-    try {
-      const connection = await getConnection();
-      const result = await connection.getSignatureStatus(signature);
-      if (!result.value || result.value.confirmationStatus !== "confirmed") {
-        console.error("Transaction not confirmed:", signature);
-        return res.status(400).json({ error: "Transaction not confirmed" });
-      }
-      console.log("Transaction confirmed:", signature);
-    } catch (err) {
-      console.error("Error verifying transaction:", err.message);
-      return res.status(400).json({ error: "Failed to verify transaction" });
-    }
-
-    const users = await loadUsers();
-    const username = users[wallet] || wallet.slice(0, 6);
-    const newSuggestion = { username, wallet, suggestion, token, amount, timestamp: new Date().toISOString(), signature };
     const suggestions = await loadSuggestions();
-    suggestions.push(newSuggestion);
+    if (index < 0 || index >= suggestions.length) {
+      return res.status(400).json({ error: "Invalid suggestion index" });
+    }
+    if (wallet !== ADMIN_WALLET.toBase58() && suggestions[index].wallet !== wallet) {
+      return res.status(403).json({ error: "Unauthorized to delete this suggestion" });
+    }
+    const [deletedSuggestion] = suggestions.splice(index, 1);
     await saveSuggestions(suggestions);
-
-    res.json({ message: "Suggestion confirmed and saved" });
+    const deletedSuggestions = await loadDeletedSuggestions();
+    deletedSuggestions.push(deletedSuggestion);
+    await saveDeletedSuggestions(deletedSuggestions);
+    res.json({ message: "Suggestion deleted" });
   } catch (err) {
-    console.error("Error in /confirm-suggestion:", err);
-    res.status(500).json({ error: "Failed to save suggestion" });
+    console.error("Error deleting suggestion:", err);
+    res.status(500).json({ error: "Failed to delete suggestion" });
   }
 });
 
 wss.on("connection", async (ws, req) => {
   const clientIp = req.socket.remoteAddress;
   console.log(`New client connected from ${clientIp}`);
-
   const messages = await loadMessages();
   messages.forEach((msg) => {
     if (ws.readyState === WebSocket.OPEN) {
@@ -533,7 +293,6 @@ wss.on("connection", async (ws, req) => {
           timestamp: new Date().toISOString(),
           originalWallet: msg.user,
         };
-        console.log(`Received: ${msg.rank} ${username}: ${msg.text}`);
         const messages = await loadMessages();
         messages.push(chatMessage);
         await saveMessages(messages);
@@ -542,15 +301,18 @@ wss.on("connection", async (ws, req) => {
             client.send(JSON.stringify({ type: "chat", ...chatMessage }));
           }
         });
-      } else if (msg.type === "delete" && msg.index !== undefined) {
+      } else if (msg.type === "delete_message" && msg.index !== undefined) {
         const messages = await loadMessages();
+        if (msg.user !== ADMIN_WALLET.toBase58() && messages[msg.index]?.originalWallet !== msg.user) {
+          console.log(`Unauthorized delete attempt by ${msg.user} for index ${msg.index}`);
+          return;
+        }
         if (messages[msg.index]) {
-          console.log(`Delete request for message at index ${msg.index}`);
           messages.splice(msg.index, 1);
           await saveMessages(messages);
           wss.clients.forEach((client) => {
             if (client.readyState === WebSocket.OPEN) {
-              client.send(JSON.stringify({ type: "delete", index: msg.index }));
+              client.send(JSON.stringify({ type: "delete_message", index: msg.index }));
             }
           });
         }
