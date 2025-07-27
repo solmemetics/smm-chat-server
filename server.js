@@ -226,6 +226,28 @@ app.post("/set-username", async (req, res) => {
   }
 });
 
+app.post("/set-bio", async (req, res) => {
+  try {
+    const { wallet, bio } = req.body;
+    if (!wallet || !bio) {
+      return res.status(400).json({ error: "Wallet and bio required" });
+    }
+    if (bio.length > 100) {
+      return res.status(400).json({ error: "Bio must be 100 characters or less" });
+    }
+    const users = await loadUsers();
+    if (users[wallet]?.bio && wallet !== ADMIN_WALLET.toBase58()) {
+      return res.status(403).json({ error: "Bio already set. Only admin can change it." });
+    }
+    users[wallet] = { ...users[wallet], bio };
+    await saveUsers(users);
+    res.json({ message: "Bio set" });
+  } catch (err) {
+    console.error("Error setting bio:", err);
+    res.status(500).json({ error: "Error setting bio" });
+  }
+});
+
 app.post("/upload-avatar", upload.single("avatar"), async (req, res) => {
   try {
     const { wallet } = req.body;
@@ -280,7 +302,8 @@ app.post("/submit-free-suggestion", async (req, res) => {
     const users = await loadUsers();
     const username = users[wallet]?.username || wallet.slice(0, 6);
     const avatar = users[wallet]?.avatar || null;
-    const newSuggestion = { username, wallet, suggestion, avatar, timestamp: new Date().toISOString() };
+    const bio = users[wallet]?.bio || null;
+    const newSuggestion = { username, wallet, suggestion, avatar, bio, timestamp: new Date().toISOString() };
     const suggestions = await loadSuggestions();
     suggestions.push(newSuggestion);
     await saveSuggestions(suggestions);
@@ -381,9 +404,13 @@ wss.on("connection", async (ws, req) => {
   const clientIp = req.socket.remoteAddress;
   console.log(`New client connected from ${clientIp}`);
   const messages = await loadMessages();
+  const users = await loadUsers();
   messages.forEach((msg) => {
     if (ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: "chat", ...msg }));
+      const username = users[msg.originalWallet]?.username || msg.originalWallet.slice(0, 6);
+      const avatar = users[msg.originalWallet]?.avatar || null;
+      const bio = users[msg.originalWallet]?.bio || null;
+      ws.send(JSON.stringify({ type: "chat", ...msg, user: username, avatar, bio }));
     }
   });
 
@@ -394,6 +421,7 @@ wss.on("connection", async (ws, req) => {
         const users = await loadUsers();
         const username = users[msg.user]?.username || msg.user.slice(0, 6);
         const avatar = users[msg.user]?.avatar || null;
+        const bio = users[msg.user]?.bio || null;
         const chatMessage = {
           user: username,
           rank: msg.rank,
@@ -401,6 +429,7 @@ wss.on("connection", async (ws, req) => {
           timestamp: new Date().toISOString(),
           originalWallet: msg.user,
           avatar,
+          bio,
           pinned: false
         };
         const messages = await loadMessages();
