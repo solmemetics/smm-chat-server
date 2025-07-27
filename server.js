@@ -4,6 +4,7 @@ const fs = require("fs").promises;
 const path = require("path");
 const WebSocket = require("ws");
 const { Connection, PublicKey, clusterApiUrl } = require("@solana/web3.js");
+const multer = require("multer");
 
 const app = express();
 const server = http.createServer(app);
@@ -14,6 +15,7 @@ const MESSAGES_FILE = path.join(__dirname, "messages.json");
 const USERS_FILE = path.join(__dirname, "user.json");
 const SUGGESTIONS_FILE = path.join(__dirname, "suggestions.json");
 const DELETED_SUGGESTIONS_FILE = path.join(__dirname, "deleted_suggestions.json");
+const POLLS_FILE = path.join(__dirname, "polls.json");
 
 const ADMIN_WALLET = new PublicKey("Cj64jfCQ2dR5Utf62nMnmEq8fjerAk4u1mZY1Hv53QZA");
 
@@ -22,6 +24,24 @@ const RPC_ENDPOINTS = [
   clusterApiUrl("mainnet-beta"),
   "https://api.mainnet-beta.solana.com"
 ];
+
+// Multer for avatar uploads
+const storage = multer.diskStorage({
+  destination: path.join(__dirname, "public", "avatars"),
+  filename: (req, file, cb) => {
+    cb(null, `${req.body.wallet}.png`);
+  }
+});
+const upload = multer({
+  storage,
+  fileFilter: (req, file, cb) => {
+    if (!file.mimetype.startsWith("image/")) {
+      return cb(new Error("Only image files are allowed"));
+    }
+    cb(null, true);
+  },
+  limits: { fileSize: 2 * 1024 * 1024 } // 2MB limit
+});
 
 async function getConnection(attempt = 0) {
   const rpc = RPC_ENDPOINTS[attempt];
@@ -41,32 +61,18 @@ async function getConnection(attempt = 0) {
 
 async function initFiles() {
   try {
-    await fs.access(MESSAGES_FILE);
-    console.log("Messages file exists");
-  } catch {
-    console.log("Creating new messages file");
-    await fs.writeFile(MESSAGES_FILE, JSON.stringify([]));
-  }
-  try {
-    await fs.access(USERS_FILE);
-    console.log("Users file exists");
-  } catch {
-    console.log("Creating new users file");
-    await fs.writeFile(USERS_FILE, JSON.stringify({}));
-  }
-  try {
-    await fs.access(SUGGESTIONS_FILE);
-    console.log("Suggestions file exists");
-  } catch {
-    console.log("Creating new suggestions file");
-    await fs.writeFile(SUGGESTIONS_FILE, JSON.stringify([]));
-  }
-  try {
-    await fs.access(DELETED_SUGGESTIONS_FILE);
-    console.log("Deleted suggestions file exists");
-  } catch {
-    console.log("Creating new deleted suggestions file");
-    await fs.writeFile(DELETED_SUGGESTIONS_FILE, JSON.stringify([]));
+    await fs.mkdir(path.join(__dirname, "public", "avatars"), { recursive: true });
+    for (const file of [MESSAGES_FILE, USERS_FILE, SUGGESTIONS_FILE, DELETED_SUGGESTIONS_FILE, POLLS_FILE]) {
+      try {
+        await fs.access(file);
+        console.log(`${path.basename(file)} exists`);
+      } catch {
+        console.log(`Creating ${path.basename(file)}`);
+        await fs.writeFile(file, JSON.stringify(file === USERS_FILE ? {} : []));
+      }
+    }
+  } catch (err) {
+    console.error("Error initializing files:", err);
   }
 }
 
@@ -146,9 +152,28 @@ async function saveDeletedSuggestions(deletedSuggestions) {
   }
 }
 
+async function loadPolls() {
+  try {
+    const data = await fs.readFile(POLLS_FILE, "utf8");
+    return JSON.parse(data);
+  } catch (err) {
+    console.error("Error loading polls:", err);
+    return [];
+  }
+}
+
+async function savePolls(polls) {
+  try {
+    await fs.writeFile(POLLS_FILE, JSON.stringify(polls, null, 2));
+    console.log(`Saved ${polls.length} polls`);
+  } catch (err) {
+    console.error("Error saving polls:", err);
+  }
+}
+
 initFiles();
 
-app.use(express.static(path.join(__dirname, 'public')));
+app.use(express.static(path.join(__dirname, "public")));
 app.use((req, res, next) => {
   const allowedOrigins = ["https://app.solmemetics.com", "http://localhost:3000", "https://solmemetics.github.io"];
   const origin = req.headers.origin;
@@ -189,15 +214,35 @@ app.post("/set-username", async (req, res) => {
       return res.status(400).json({ error: "Wallet and username required" });
     }
     const users = await loadUsers();
-    if (users[wallet] && wallet !== ADMIN_WALLET.toBase58()) {
+    if (users[wallet]?.username && wallet !== ADMIN_WALLET.toBase58()) {
       return res.status(403).json({ error: "Username already set. Only admin can change it." });
     }
-    users[wallet] = username;
+    users[wallet] = { ...users[wallet], username };
     await saveUsers(users);
     res.json({ message: "Username set" });
   } catch (err) {
     console.error("Error setting username:", err);
     res.status(500).json({ error: "Error setting username" });
+  }
+});
+
+app.post("/upload-avatar", upload.single("avatar"), async (req, res) => {
+  try {
+    const { wallet } = req.body;
+    if (!wallet || !req.file) {
+      return res.status(400).json({ error: "Wallet and avatar file required" });
+    }
+    const users = await loadUsers();
+    if (users[wallet]?.avatar && wallet !== ADMIN_WALLET.toBase58()) {
+      return res.status(403).json({ error: "Avatar already set. Only admin can change it." });
+    }
+    const avatarUrl = `/avatars/${wallet}.png`;
+    users[wallet] = { ...users[wallet], avatar: avatarUrl };
+    await saveUsers(users);
+    res.json({ message: "Avatar uploaded", avatar: avatarUrl });
+  } catch (err) {
+    console.error("Error uploading avatar:", err);
+    res.status(500).json({ error: err.message || "Error uploading avatar" });
   }
 });
 
@@ -233,8 +278,9 @@ app.post("/submit-free-suggestion", async (req, res) => {
       return res.status(400).json({ error: "Invalid wallet address" });
     }
     const users = await loadUsers();
-    const username = users[wallet] || wallet.slice(0, 6);
-    const newSuggestion = { username, wallet, suggestion, timestamp: new Date().toISOString() };
+    const username = users[wallet]?.username || wallet.slice(0, 6);
+    const avatar = users[wallet]?.avatar || null;
+    const newSuggestion = { username, wallet, suggestion, avatar, timestamp: new Date().toISOString() };
     const suggestions = await loadSuggestions();
     suggestions.push(newSuggestion);
     await saveSuggestions(suggestions);
@@ -270,6 +316,67 @@ app.post("/delete-suggestion", async (req, res) => {
   }
 });
 
+app.get("/polls", async (req, res) => {
+  try {
+    const polls = await loadPolls();
+    res.json(polls);
+  } catch (err) {
+    console.error("Error reading polls:", err);
+    res.status(500).json({ error: "Error reading polls" });
+  }
+});
+
+app.post("/create-poll", async (req, res) => {
+  try {
+    const { question, options, wallet } = req.body;
+    if (!question || !options || options.length < 2 || !wallet) {
+      return res.status(400).json({ error: "Question, at least two options, and wallet required" });
+    }
+    if (wallet !== ADMIN_WALLET.toBase58()) {
+      return res.status(403).json({ error: "Only admin can create polls" });
+    }
+    const polls = await loadPolls();
+    const newPoll = {
+      question,
+      options: options.map(opt => ({ option: opt, votes: 0 })),
+      voters: [],
+      timestamp: new Date().toISOString()
+    };
+    polls.push(newPoll);
+    await savePolls(polls);
+    res.json({ message: "Poll created" });
+  } catch (err) {
+    console.error("Error creating poll:", err);
+    res.status(500).json({ error: "Failed to create poll" });
+  }
+});
+
+app.post("/vote", async (req, res) => {
+  try {
+    const { pollIndex, optionIndex, wallet } = req.body;
+    if (pollIndex === undefined || optionIndex === undefined || !wallet) {
+      return res.status(400).json({ error: "Poll index, option index, and wallet required" });
+    }
+    const polls = await loadPolls();
+    if (pollIndex < 0 || pollIndex >= polls.length) {
+      return res.status(400).json({ error: "Invalid poll index" });
+    }
+    if (optionIndex < 0 || optionIndex >= polls[pollIndex].options.length) {
+      return res.status(400).json({ error: "Invalid option index" });
+    }
+    if (polls[pollIndex].voters.includes(wallet)) {
+      return res.status(403).json({ error: "Already voted" });
+    }
+    polls[pollIndex].options[optionIndex].votes += 1;
+    polls[pollIndex].voters.push(wallet);
+    await savePolls(polls);
+    res.json({ message: "Vote recorded" });
+  } catch (err) {
+    console.error("Error voting:", err);
+    res.status(500).json({ error: "Failed to record vote" });
+  }
+});
+
 wss.on("connection", async (ws, req) => {
   const clientIp = req.socket.remoteAddress;
   console.log(`New client connected from ${clientIp}`);
@@ -285,13 +392,16 @@ wss.on("connection", async (ws, req) => {
       const msg = JSON.parse(data);
       if (msg.type === "chat" && msg.user && msg.rank && msg.text) {
         const users = await loadUsers();
-        const username = users[msg.user] || msg.user.slice(0, 6);
+        const username = users[msg.user]?.username || msg.user.slice(0, 6);
+        const avatar = users[msg.user]?.avatar || null;
         const chatMessage = {
           user: username,
           rank: msg.rank,
           text: msg.text,
           timestamp: new Date().toISOString(),
           originalWallet: msg.user,
+          avatar,
+          pinned: false
         };
         const messages = await loadMessages();
         messages.push(chatMessage);
@@ -313,6 +423,23 @@ wss.on("connection", async (ws, req) => {
           wss.clients.forEach((client) => {
             if (client.readyState === WebSocket.OPEN) {
               client.send(JSON.stringify({ type: "delete_message", index: msg.index }));
+            }
+          });
+        }
+      } else if (msg.type === "pin_message" && msg.index !== undefined) {
+        if (msg.user !== ADMIN_WALLET.toBase58()) {
+          console.log(`Unauthorized pin attempt by ${msg.user}`);
+          return;
+        }
+        const messages = await loadMessages();
+        if (messages[msg.index]) {
+          messages[msg.index].pinned = true;
+          const [pinnedMessage] = messages.splice(msg.index, 1);
+          messages.unshift(pinnedMessage);
+          await saveMessages(messages);
+          wss.clients.forEach((client) => {
+            if (client.readyState === WebSocket.OPEN) {
+              client.send(JSON.stringify({ type: "pin_message", index: 0 }));
             }
           });
         }
