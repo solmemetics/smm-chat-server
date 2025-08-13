@@ -173,9 +173,18 @@ async function savePolls(polls) {
 
 initFiles();
 
+// Serve static files, including avatars
+app.use("/avatars", express.static(path.join(__dirname, "public", "avatars")));
 app.use(express.static(path.join(__dirname, "public")));
+
+// CORS middleware
 app.use((req, res, next) => {
-  const allowedOrigins = ["https://app.solmemetics.com", "http://localhost:3000", "https://solmemetics.github.io"];
+  const allowedOrigins = [
+    "https://app.solmemetics.com",
+    "http://localhost:3000",
+    "https://solmemetics.github.io",
+    "https://smm-chat-server.onrender.com"
+  ];
   const origin = req.headers.origin;
   if (allowedOrigins.includes(origin)) {
     res.header("Access-Control-Allow-Origin", origin);
@@ -194,6 +203,7 @@ app.get("/messages", async (req, res) => {
     const messages = await loadMessages();
     res.json(messages);
   } catch (err) {
+    console.error("Error in /messages:", err);
     res.status(500).json({ error: "Error reading messages" });
   }
 });
@@ -203,6 +213,7 @@ app.get("/users", async (req, res) => {
     const users = await loadUsers();
     res.json(users);
   } catch (err) {
+    console.error("Error in /users:", err);
     res.status(500).json({ error: "Error reading users" });
   }
 });
@@ -213,15 +224,21 @@ app.post("/set-username", async (req, res) => {
     if (!wallet || !username) {
       return res.status(400).json({ error: "Wallet and username required" });
     }
+    try {
+      new PublicKey(wallet); // Validate wallet address
+    } catch {
+      return res.status(400).json({ error: "Invalid wallet address" });
+    }
     const users = await loadUsers();
     if (users[wallet]?.username && wallet !== ADMIN_WALLET.toBase58()) {
       return res.status(403).json({ error: "Username already set. Only admin can change it." });
     }
     users[wallet] = { ...users[wallet], username };
     await saveUsers(users);
+    console.log(`Username set for ${wallet}: ${username}`);
     res.json({ message: "Username set" });
   } catch (err) {
-    console.error("Error setting username:", err);
+    console.error("Error in /set-username:", err);
     res.status(500).json({ error: "Error setting username" });
   }
 });
@@ -235,15 +252,21 @@ app.post("/set-bio", async (req, res) => {
     if (bio.length > 100) {
       return res.status(400).json({ error: "Bio must be 100 characters or less" });
     }
+    try {
+      new PublicKey(wallet); // Validate wallet address
+    } catch {
+      return res.status(400).json({ error: "Invalid wallet address" });
+    }
     const users = await loadUsers();
     if (users[wallet]?.bio && wallet !== ADMIN_WALLET.toBase58()) {
       return res.status(403).json({ error: "Bio already set. Only admin can change it." });
     }
     users[wallet] = { ...users[wallet], bio };
     await saveUsers(users);
+    console.log(`Bio set for ${wallet}: ${bio}`);
     res.json({ message: "Bio set" });
   } catch (err) {
-    console.error("Error setting bio:", err);
+    console.error("Error in /set-bio:", err);
     res.status(500).json({ error: "Error setting bio" });
   }
 });
@@ -254,16 +277,25 @@ app.post("/upload-avatar", upload.single("avatar"), async (req, res) => {
     if (!wallet || !req.file) {
       return res.status(400).json({ error: "Wallet and avatar file required" });
     }
+    try {
+      new PublicKey(wallet); // Validate wallet address
+    } catch {
+      return res.status(400).json({ error: "Invalid wallet address" });
+    }
     const users = await loadUsers();
     if (users[wallet]?.avatar && wallet !== ADMIN_WALLET.toBase58()) {
       return res.status(403).json({ error: "Avatar already set. Only admin can change it." });
     }
-    const avatarUrl = `/avatars/${wallet}.png`;
+    const baseUrl = process.env.NODE_ENV === "production"
+      ? "https://smm-chat-server.onrender.com"
+      : "http://localhost:3000";
+    const avatarUrl = `${baseUrl}/avatars/${wallet}.png`;
     users[wallet] = { ...users[wallet], avatar: avatarUrl };
     await saveUsers(users);
-    res.json({ message: "Avatar uploaded", avatar: avatarUrl });
+    console.log(`Avatar uploaded for ${wallet}: ${avatarUrl}`);
+    res.json({ message: "Avatar uploaded", avatarUrl });
   } catch (err) {
-    console.error("Error uploading avatar:", err);
+    console.error("Error in /upload-avatar:", err);
     res.status(500).json({ error: err.message || "Error uploading avatar" });
   }
 });
@@ -274,6 +306,11 @@ app.get("/suggestions", async (req, res) => {
     if (!wallet) {
       return res.status(400).json({ error: "Wallet parameter required" });
     }
+    try {
+      new PublicKey(wallet); // Validate wallet address
+    } catch {
+      return res.status(400).json({ error: "Invalid wallet address" });
+    }
     const suggestions = await loadSuggestions();
     const deletedSuggestions = await loadDeletedSuggestions();
     if (wallet === ADMIN_WALLET.toBase58()) {
@@ -282,7 +319,7 @@ app.get("/suggestions", async (req, res) => {
     const userSuggestions = suggestions.filter(sug => sug.wallet === wallet);
     res.json(userSuggestions);
   } catch (err) {
-    console.error("Error reading suggestions:", err);
+    console.error("Error in /suggestions:", err);
     res.status(500).json({ error: "Error reading suggestions" });
   }
 });
@@ -293,10 +330,9 @@ app.post("/submit-free-suggestion", async (req, res) => {
     if (!wallet || !suggestion) {
       return res.status(400).json({ error: "Wallet and suggestion required" });
     }
-    let userPublicKey;
     try {
-      userPublicKey = new PublicKey(wallet);
-    } catch (err) {
+      new PublicKey(wallet); // Validate wallet address
+    } catch {
       return res.status(400).json({ error: "Invalid wallet address" });
     }
     const users = await loadUsers();
@@ -307,6 +343,7 @@ app.post("/submit-free-suggestion", async (req, res) => {
     const suggestions = await loadSuggestions();
     suggestions.push(newSuggestion);
     await saveSuggestions(suggestions);
+    console.log(`Suggestion submitted by ${wallet}: ${suggestion}`);
     res.json({ message: "Suggestion saved", suggestion: newSuggestion });
   } catch (err) {
     console.error("Error in /submit-free-suggestion:", err);
@@ -320,6 +357,11 @@ app.post("/delete-suggestion", async (req, res) => {
     if (index === undefined || !wallet) {
       return res.status(400).json({ error: "Index and wallet required" });
     }
+    try {
+      new PublicKey(wallet); // Validate wallet address
+    } catch {
+      return res.status(400).json({ error: "Invalid wallet address" });
+    }
     const suggestions = await loadSuggestions();
     if (index < 0 || index >= suggestions.length) {
       return res.status(400).json({ error: "Invalid suggestion index" });
@@ -332,9 +374,10 @@ app.post("/delete-suggestion", async (req, res) => {
     const deletedSuggestions = await loadDeletedSuggestions();
     deletedSuggestions.push(deletedSuggestion);
     await saveDeletedSuggestions(deletedSuggestions);
+    console.log(`Suggestion deleted by ${wallet} at index ${index}`);
     res.json({ message: "Suggestion deleted" });
   } catch (err) {
-    console.error("Error deleting suggestion:", err);
+    console.error("Error in /delete-suggestion:", err);
     res.status(500).json({ error: "Failed to delete suggestion" });
   }
 });
@@ -344,7 +387,7 @@ app.get("/polls", async (req, res) => {
     const polls = await loadPolls();
     res.json(polls);
   } catch (err) {
-    console.error("Error reading polls:", err);
+    console.error("Error in /polls:", err);
     res.status(500).json({ error: "Error reading polls" });
   }
 });
@@ -367,9 +410,10 @@ app.post("/create-poll", async (req, res) => {
     };
     polls.push(newPoll);
     await savePolls(polls);
+    console.log(`Poll created by ${wallet}: ${question}`);
     res.json({ message: "Poll created" });
   } catch (err) {
-    console.error("Error creating poll:", err);
+    console.error("Error in /create-poll:", err);
     res.status(500).json({ error: "Failed to create poll" });
   }
 });
@@ -379,6 +423,11 @@ app.post("/vote", async (req, res) => {
     const { pollIndex, optionIndex, wallet } = req.body;
     if (pollIndex === undefined || optionIndex === undefined || !wallet) {
       return res.status(400).json({ error: "Poll index, option index, and wallet required" });
+    }
+    try {
+      new PublicKey(wallet); // Validate wallet address
+    } catch {
+      return res.status(400).json({ error: "Invalid wallet address" });
     }
     const polls = await loadPolls();
     if (pollIndex < 0 || pollIndex >= polls.length) {
@@ -393,9 +442,10 @@ app.post("/vote", async (req, res) => {
     polls[pollIndex].options[optionIndex].votes += 1;
     polls[pollIndex].voters.push(wallet);
     await savePolls(polls);
+    console.log(`Vote recorded for ${wallet} on poll ${pollIndex}, option ${optionIndex}`);
     res.json({ message: "Vote recorded" });
   } catch (err) {
-    console.error("Error voting:", err);
+    console.error("Error in /vote:", err);
     res.status(500).json({ error: "Failed to record vote" });
   }
 });
@@ -474,7 +524,7 @@ wss.on("connection", async (ws, req) => {
         }
       }
     } catch (err) {
-      console.error("Invalid message format:", err);
+      console.error("Invalid message format in WebSocket:", err);
     }
   });
 
